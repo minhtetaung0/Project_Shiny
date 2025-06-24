@@ -166,22 +166,35 @@ ui <- dashboardPage(
       ),
       
       tabItem(tabName = "eda",
-              fluidRow(
-                box(
-                  title = "Select Year Range", width = 12,
-                  sliderInput("year_range", "Release Year Range:",
-                              min = min(nodes_tbl$release_date, na.rm = TRUE),
-                              max = max(nodes_tbl$release_date, na.rm = TRUE),
-                              value = c(min(nodes_tbl$release_date, na.rm = TRUE),
-                                        max(nodes_tbl$release_date, na.rm = TRUE)),
-                              sep = ""
-                  )
-                )
-              ),
               tabsetPanel(
                 tabPanel("Edge Types", plotOutput("edgeTypePlot")),
                 tabPanel("Node Types", plotOutput("nodeTypePlot")),
-                tabPanel("Genre Trends", plotlyOutput("genreHeatmap")),
+                
+                tabPanel("Genre Trends",
+                         fluidRow(
+                           column(
+                             width = 3,
+                             tags$div(
+                               class = "floating-panel",
+                               box(
+                                 title = "Select Year Range", width = NULL, solidHeader = TRUE, status = "primary",
+                                 sliderInput("year_range", "Release Year Range:",
+                                             min = min(nodes_tbl$release_date, na.rm = TRUE),
+                                             max = max(nodes_tbl$release_date, na.rm = TRUE),
+                                             value = c(min(nodes_tbl$release_date, na.rm = TRUE),
+                                                       max(nodes_tbl$release_date, na.rm = TRUE)),
+                                             sep = ""
+                                 )
+                               )
+                             )
+                           ),
+                           column(
+                             width = 9,
+                             plotlyOutput("genreHeatmap")
+                           )
+                         )
+                ),
+                
                 tabPanel("Notable Songs", plotOutput("notableSongsPlot"))
               )
       ),
