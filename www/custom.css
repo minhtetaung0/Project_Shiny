@@ -64,3 +64,11 @@
 .box {
   border-top: 3px solid #C599B6 !important;
 }
+
+.floating-panel {
+  background-color: #fdf7f4;
+  padding: 15px;
+  border-radius: 8px;
+  box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
+  margin-top: 10px;
+}

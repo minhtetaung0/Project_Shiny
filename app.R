@@ -183,9 +183,22 @@ ui <- dashboardPage(
                 valueBoxOutput("kpi_top_genre")
               ),
               fluidRow(
-                box(title = "Top Genres", width = 6, status = "primary", solidHeader = TRUE,
-                    plotOutput("overviewGenrePlot", height = "250px")),
-                box(title = "Time to Notability", width = 6, status = "success", solidHeader = TRUE,
+                box(title = "Genre Percentage (Donut Chart)", width = 7, status = "warning", solidHeader = TRUE,
+                    fluidRow(
+                      column(width = 4,
+                             sliderInput("donut_year_range", "Select Year Range:",
+                                         min = min(artist_works$release_date, na.rm = TRUE),
+                                         max = max(artist_works$release_date, na.rm = TRUE),
+                                         value = c(1990, 2000),
+                                         step = 5,
+                                         sep = "")
+                      ),
+                      column(width = 8,
+                             plotlyOutput("genreDonutPlot", height = "300px")
+                      )
+                    )
+                ),
+                box(title = "Time to Notability", width = 5, status = "success", solidHeader = TRUE,
                     plotOutput("overviewTimeToNotabilityPlot", height = "250px"))
               ),
               fluidRow(
@@ -260,59 +273,6 @@ ui <- dashboardPage(
 
 # ===== Server =====
 server <- function(input, output, session) {
-  
-  output$subtabs_ui <- renderUI({
-    switch(input$main_tabs,
-           "Overview" = tagList(
-             fluidRow(
-               valueBoxOutput("kpi_total_artists", width = 3),
-               valueBoxOutput("kpi_total_notable", width = 3),
-               valueBoxOutput("kpi_avg_time_to_notability", width = 3),
-               valueBoxOutput("kpi_top_genre", width = 3)
-             ),
-             fluidRow(
-               box(title = "Top Genres", width = 6, status = "primary", solidHeader = TRUE,
-                   plotOutput("overviewGenrePlot", height = "250px")),
-               box(title = "Time to Notability", width = 6, status = "success", solidHeader = TRUE,
-                   plotOutput("overviewTimeToNotabilityPlot", height = "250px"))
-             ),
-             fluidRow(
-               box(title = "Artists Profile Table", width = 12, status = "info", solidHeader = TRUE,
-                   DT::dataTableOutput("artists_table"))
-             )
-           ),
-           
-           "EDA" = tabsetPanel(
-             tabPanel("Edge Types", plotOutput("edgeTypePlot")),
-             tabPanel("Node Types", plotOutput("nodeTypePlot")),
-             tabPanel("Genre Trends", plotlyOutput("genreHeatmap")),
-             tabPanel("Notable Songs", plotOutput("notableSongsPlot"))
-           ),
-           
-           "Artists Profiles" = DT::dataTableOutput("artists_table"),
-           
-           "Influence Network" = visNetworkOutput("sailorNetwork", height = "700px"),
-           
-           "Cluster Analysis" = tagList(
-             plotOutput("elbowPlot"),
-             plotlyOutput("pcaPlot"),
-             DT::dataTableOutput("clusterSummary")
-           ),
-           
-           "Artist Comparison" = tagList(
-             DT::dataTableOutput("artistComparisonTable"),
-             plotOutput("timelinePlot"),
-             visNetworkOutput("egoNetwork", height = "600px")
-           ),
-           
-           "Future Predictions" = tagList(
-             DT::dataTableOutput("futureStarsTable"),
-             plotOutput("radar1"),
-             plotOutput("radar2"),
-             plotOutput("radar3")
-           )
-    )
-  })
   
   output$edgeTypePlot <- renderPlot({
     ggplot(edges_tbl_mapped, aes(y = edge_type)) +
@@ -435,6 +395,47 @@ server <- function(input, output, session) {
       visEdges(arrows = "to") %>%
       visLayout(randomSeed = 42)
   })
+  
+  output$genreDonutPlot <- renderPlotly({
+    # Filter data by selected year range
+    filtered <- artist_works %>%
+      filter(release_date >= input$donut_year_range[1],
+             release_date <= input$donut_year_range[2]) %>%
+      filter(!is.na(genre))
+    
+    # Aggregate and simplify labels
+    genre_counts <- filtered %>%
+      count(genre, sort = TRUE) %>%
+      mutate(
+        pct = round(100 * n / sum(n), 1),
+        label = genre,
+        hover_label = paste0(genre, ": ", pct, "%")
+      )
+    
+    # Optional: Group small genres into "Others"
+    genre_counts <- genre_counts %>%
+      mutate(group = ifelse(pct < 3, "Other", genre)) %>%
+      group_by(group) %>%
+      summarise(n = sum(n), .groups = "drop") %>%
+      mutate(
+        pct = round(100 * n / sum(n), 1),
+        hover_label = paste0(group, ": ", pct, "%")
+      )
+    
+    # Plot
+    plot_ly(genre_counts,
+            labels = ~group,
+            values = ~n,
+            type = 'pie',
+            hole = 0.5,
+            textinfo = "none",  # hides cluttered labels
+            hoverinfo = "text",
+            text = ~hover_label,
+            marker = list(line = list(color = '#FFFFFF', width = 1))) %>%
+      layout(title = list(text = "Genre Share by Selected Years", x = 0.5),
+             showlegend = TRUE)
+  })
+  
   
 }
 
