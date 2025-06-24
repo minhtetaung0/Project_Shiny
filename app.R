@@ -128,7 +128,6 @@ artists_profile <- artists_profile %>%
 sailor_id <- nodes_tbl %>% 
   filter(str_detect(name, fixed("Sailor Shift", ignore_case = TRUE))) %>%
   pull(id)
-print(sailor_id)
 
 # ---- Influence Edge Types ----
 influence_types <- c("LyricalReferenceTo", "CoverOf", "InterpolatesFrom", "DirectlySamples", "InStyleOf")
@@ -246,7 +245,9 @@ ui <- dashboardPage(
       ),
       
       tabItem(tabName = "network",
-              visNetworkOutput("sailorNetwork", height = "700px")
+              visNetworkOutput("sailorNetwork", height = "1000px")
+              
+      
       ),
       
       tabItem(tabName = "cluster",
@@ -392,7 +393,8 @@ server <- function(input, output, session) {
   output$sailorNetwork <- renderVisNetwork({
     visNetwork(vis_nodes, vis_edges, height = "1000px", width = "100%") %>%
       visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
-      visEdges(arrows = "to") %>%
+      visEdges(arrows = "to", font = list(size = 10)) %>%
+      visNodes(font = list(size = 10), size = 30) %>%  # adjust font and node size
       visLayout(randomSeed = 42)
   })
   
