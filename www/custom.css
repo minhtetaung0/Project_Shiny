@@ -1,0 +1,66 @@
+/* Header */
+.skin-purple .main-header .logo {
+  background-color: #C599B6 !important;
+  color: white !important;
+}
+.skin-purple .main-header .navbar {
+  background-color: #C599B6 !important;
+}
+
+/* Sidebar */
+.skin-purple .main-sidebar {
+  background-color: #C599B6 !important;
+}
+
+/* Sidebar menu item text */
+.skin-purple .main-sidebar .sidebar a {
+  color: #3f333b !important;
+}
+
+/* Sidebar menu item text on hover */
+.skin-purple .main-sidebar .sidebar a:hover {
+  color: #fff7f3 !important;
+}
+
+/* Sidebar menu icon on hover */
+.skin-purple .main-sidebar .sidebar a:hover i {
+  color: #fff7f3 !important;
+}
+
+/* Fix sidebar icon color too */
+.skin-purple .main-sidebar .sidebar .sidebar-menu i {
+  color: #3f333b !important;
+}
+
+/* Active menu item */
+.skin-purple .sidebar-menu > li.active > a {
+  background-color: #9e6a9c !important;
+  color: white !important;
+}
+
+.skin-purple .main-sidebar .sidebar-menu li.active a i {
+  color: white !important;
+}
+
+/* ValueBox and Box Headers */
+.box.box-solid.box-primary > .box-header {
+  background: #C599B6 !important;
+  color: white;
+}
+
+.content-wrapper,
+.right-side {
+  background-color: #fdf7f4 !important;
+}
+
+/* Highlight active tabs in tabBox or tabPanel */
+.nav-tabs-custom > .nav-tabs > li.active > a {
+  background-color: #C599B6 !important;
+  color: white !important;
+  border-color: #C599B6 !important;
+}
+
+/* Box titles and borders */
+.box {
+  border-top: 3px solid #C599B6 !important;
+}
