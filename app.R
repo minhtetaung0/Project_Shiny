@@ -219,7 +219,9 @@ ui <- dashboardPage(
       ),
       
       tabItem(tabName = "network",
-              visNetworkOutput("sailorNetwork", height = "700px")
+              visNetworkOutput("sailorNetwork", height = "1000px")
+              
+      
       ),
       
       tabItem(tabName = "cluster",
