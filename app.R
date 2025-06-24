@@ -15,6 +15,8 @@ library(factoextra)
 library(FactoMineR)
 library(fmsb)
 library(forcats)
+library(shinydashboard)
+library(shinythemes)
 
 # ===== Data Preprocessing =====
 data_path <- "data/MC1_graph.json"
@@ -22,37 +24,85 @@ kg <- fromJSON(data_path)
 
 nodes_tbl <- as_tibble(kg$nodes) %>% clean_names()
 edges_tbl <- as_tibble(kg$links) %>% clean_names()
-nodes_tbl <- nodes_tbl %>% mutate(release_date = as.integer(release_date))
+
+nodes_tbl <- nodes_tbl %>%
+  mutate(release_date = as.integer(release_date)) %>%
+  mutate(id = as.integer(id)) %>%
+  distinct()
+
+# --- ID Mapping ---
 id_map <- tibble(id = nodes_tbl$id, index = seq_len(nrow(nodes_tbl)))
+
 edges_tbl_mapped <- edges_tbl %>%
   left_join(id_map, by = c("source" = "id")) %>% rename(from = index) %>%
   left_join(id_map, by = c("target" = "id")) %>% rename(to = index) %>%
   filter(!is.na(from), !is.na(to)) %>%
   mutate(from = as.integer(from), to = as.integer(to))
-nodes_tbl_clean <- nodes_tbl %>% mutate(id = as.integer(id)) %>% distinct()
-graph <- tbl_graph(nodes = nodes_tbl_clean, edges = edges_tbl_mapped, directed = TRUE)
 
-people <- nodes_tbl_clean %>% filter(node_type == "Person") %>% select(person_id = id, name)
-songs_albums <- nodes_tbl_clean %>% filter(node_type %in% c("Song", "Album")) %>% select(work_id = id, release_date, genre, notable)
+# --- Build Graph Object ---
+graph <- tbl_graph(nodes = nodes_tbl, edges = edges_tbl_mapped, directed = TRUE)
 
-contribution_types <- c("ComposerOf", "PerformerOf", "ProducerOf", "LyricistOf", "RecordedBy")
-collab_types <- c("LyricalReferenceTo", "CoverOf", "InterpolatesFrom", "DirectlySamples")
+# --- Define Node Supertypes ---
+nodes_tbl <- nodes_tbl %>%
+  mutate(
+    supertype = case_when(
+      node_type %in% c("Song", "Album") ~ "Work",
+      node_type %in% c("Person") ~ "Individual",
+      node_type %in% c("MusicalGroup") ~ "Group",
+      node_type %in% c("RecordLabel") ~ "Organization",
+      TRUE ~ "Other"
+    )
+  )
 
+# Add edge_type into mapped table first BEFORE any joins
+edges_tbl_mapped <- edges_tbl %>%
+  left_join(id_map, by = c("source" = "id")) %>% rename(from = index) %>%
+  left_join(id_map, by = c("target" = "id")) %>% rename(to = index) %>%
+  filter(!is.na(from), !is.na(to)) %>%
+  mutate(from = as.integer(from), to = as.integer(to))
+
+# Now define superedge using edge_type which is already in the table
+edges_tbl_mapped <- edges_tbl_mapped %>%
+  mutate(
+    superedge = case_when(
+      edge_type %in% c("ComposerOf", "LyricistOf", "ProducerOf", "RecordedBy", "PerformerOf") ~ "Contributes",
+      edge_type %in% c("CoverOf", "DirectlySamples", "InterpolatesFrom", "LyricalReferenceTo") ~ "Collaborations",
+      edge_type %in% c("DistributedBy") ~ "Business",
+      edge_type %in% c("MemberOf") ~ "Membership",
+      edge_type %in% c("InStyleOf") ~ "StyleInfluence",
+      TRUE ~ "Other"
+    )
+  )
+
+# --- Extract People and Works using supertype ---
+people_tbl <- nodes_tbl %>%
+  filter(supertype == "Individual") %>%
+  select(person_id = id, name)
+
+works_tbl <- nodes_tbl %>%
+  filter(supertype == "Work") %>%
+  select(work_id = id, release_date, genre, notable)
+
+# --- Contribution Mapping based on superedge ---
 created_links <- edges_tbl_mapped %>%
-  filter(edge_type %in% contribution_types) %>%
+  filter(superedge == "Contributes") %>%
   left_join(id_map, by = c("from" = "index")) %>% rename(person_id = id) %>%
   left_join(id_map, by = c("to" = "index")) %>% rename(work_id = id)
 
-artist_works <- created_links %>% left_join(songs_albums, by = "work_id") %>% filter(!is.na(release_date))
+# --- Artist-Work Mapping with Metadata ---
+artist_works <- created_links %>%
+  left_join(works_tbl, by = "work_id") %>%
+  filter(!is.na(release_date))
 
-rising_star_profile <- artist_works %>%
+# --- Artists Profile Summary ---
+artists_profile <- artist_works %>%
   group_by(person_id) %>%
   summarise(
     total_works = n(),
     notable_works = sum(notable, na.rm = TRUE),
     oceanus_folk_works = sum(genre == "Oceanus Folk", na.rm = TRUE),
-    first_release = min(as.integer(release_date), na.rm = TRUE),
-    first_notable = min(as.integer(release_date[notable == TRUE]), na.rm = TRUE),
+    first_release = min(release_date, na.rm = TRUE),
+    first_notable = suppressWarnings(min(release_date[notable == TRUE], na.rm = TRUE)),
     .groups = "drop"
   ) %>%
   mutate(
@@ -60,48 +110,108 @@ rising_star_profile <- artist_works %>%
     time_to_notability = ifelse(!is.na(first_notable), first_notable - first_release, NA)
   )
 
+# --- Collaboration Count using superedge ---
 collaborations <- edges_tbl_mapped %>%
-  filter(edge_type %in% collab_types) %>%
-  count(from, name = "collaborations") %>%
-  left_join(id_map, by = c("from" = "index")) %>% rename(person_id = id)
+  filter(superedge == "Collaborations") %>%
+  left_join(id_map, by = c("from" = "index")) %>%
+  count(id, name = "collaborations") %>%
+  rename(person_id = id)
 
-rising_star_profile <- rising_star_profile %>%
+# --- Final Profile Merge ---
+artists_profile <- artists_profile %>%
   left_join(collaborations, by = "person_id") %>%
   mutate(collaborations = replace_na(collaborations, 0)) %>%
-  inner_join(people, by = "person_id") %>%
+  inner_join(people_tbl, by = "person_id") %>%
   relocate(person_id, name)
 
 # ===== UI =====
-ui <- fluidPage(
-  titlePanel("Oceanus Folk Influence Explorer"),
+ui <- dashboardPage(
+  skin = "purple",
+  dashboardHeader(title = "Oceanus Folk Influence Explorer"),
   
-  sidebarLayout(
-    sidebarPanel(
-      width = 2,
-      navlistPanel(
-        id = "main_tabs",
-        widths = c(12, 12),
-        tabPanel("Overview"),
-        tabPanel("EDA"),
-        tabPanel("Rising Stars"),
-        tabPanel("Influence Network"),
-        tabPanel("Cluster Analysis"),
-        tabPanel("Artist Comparison"),
-        tabPanel("Future Predictions")
-      ),
-      conditionalPanel(
-        condition = "input.main_tabs == 'EDA'",
-        sliderInput("year_range", "Select Year Range:",
-                    min = min(nodes_tbl$release_date, na.rm = TRUE),
-                    max = max(nodes_tbl$release_date, na.rm = TRUE),
-                    value = c(2000, 2040), step = 1, sep = ""),
-        selectInput("genre_select", "Select Genres:",
-                    choices = sort(unique(na.omit(nodes_tbl$genre))),
-                    selected = NULL, multiple = TRUE)
-      )
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Overview", tabName = "overview", icon = icon("dashboard")),
+      menuItem("EDA", tabName = "eda", icon = icon("chart-bar")),
+      menuItem("Artists Profiles", tabName = "artists", icon = icon("users")),
+      menuItem("Influence Network", tabName = "network", icon = icon("project-diagram")),
+      menuItem("Cluster Analysis", tabName = "cluster", icon = icon("layer-group")),
+      menuItem("Artist Comparison", tabName = "compare", icon = icon("user-friends")),
+      menuItem("Future Predictions", tabName = "future", icon = icon("chart-line"))
+    )
+  ),
+  
+  dashboardBody(
+    tags$head(
+      tags$link(rel = "stylesheet", type = "text/css", href = "custom.css")
     ),
-    mainPanel(
-      uiOutput("subtabs_ui")
+    tabItems(
+      tabItem(tabName = "overview",
+              fluidRow(
+                valueBoxOutput("kpi_total_artists"),
+                valueBoxOutput("kpi_total_notable"),
+                valueBoxOutput("kpi_avg_time_to_notability"),
+                valueBoxOutput("kpi_top_genre")
+              ),
+              fluidRow(
+                box(title = "Top Genres", width = 6, status = "primary", solidHeader = TRUE,
+                    plotOutput("overviewGenrePlot", height = "250px")),
+                box(title = "Time to Notability", width = 6, status = "success", solidHeader = TRUE,
+                    plotOutput("overviewTimeToNotabilityPlot", height = "250px"))
+              ),
+              fluidRow(
+                box(title = "Artists Profile Table", width = 12, status = "info", solidHeader = TRUE,
+                    DT::dataTableOutput("artists_table"))
+              )
+      ),
+      
+      tabItem(tabName = "eda",
+              fluidRow(
+                box(
+                  title = "Select Year Range", width = 12,
+                  sliderInput("year_range", "Release Year Range:",
+                              min = min(nodes_tbl$release_date, na.rm = TRUE),
+                              max = max(nodes_tbl$release_date, na.rm = TRUE),
+                              value = c(min(nodes_tbl$release_date, na.rm = TRUE),
+                                        max(nodes_tbl$release_date, na.rm = TRUE)),
+                              sep = ""
+                  )
+                )
+              ),
+              tabsetPanel(
+                tabPanel("Edge Types", plotOutput("edgeTypePlot")),
+                tabPanel("Node Types", plotOutput("nodeTypePlot")),
+                tabPanel("Genre Trends", plotlyOutput("genreHeatmap")),
+                tabPanel("Notable Songs", plotOutput("notableSongsPlot"))
+              )
+      ),
+      
+      tabItem(tabName = "artists",
+              DT::dataTableOutput("artists_table")
+      ),
+      
+      tabItem(tabName = "network",
+              visNetworkOutput("influenceNetwork", height = "700px")
+      ),
+      
+      tabItem(tabName = "cluster",
+              plotOutput("elbowPlot"),
+              plotlyOutput("pcaPlot"),
+              DT::dataTableOutput("clusterSummary")
+      ),
+      
+      tabItem(tabName = "compare",
+              DT::dataTableOutput("artistComparisonTable"),
+              plotOutput("timelinePlot"),
+              visNetworkOutput("egoNetwork", height = "600px")
+      ),
+      
+      tabItem(tabName = "future",
+              DT::dataTableOutput("futureStarsTable"),
+              plotOutput("radar1"),
+              plotOutput("radar2"),
+              plotOutput("radar3")
+      )
     )
   )
 )
@@ -111,7 +221,24 @@ server <- function(input, output, session) {
   
   output$subtabs_ui <- renderUI({
     switch(input$main_tabs,
-           "Overview" = h3("Explore Sailor Shift's career, Oceanus Folk genre evolution, and rising music stars."),
+           "Overview" = tagList(
+             fluidRow(
+               valueBoxOutput("kpi_total_artists", width = 3),
+               valueBoxOutput("kpi_total_notable", width = 3),
+               valueBoxOutput("kpi_avg_time_to_notability", width = 3),
+               valueBoxOutput("kpi_top_genre", width = 3)
+             ),
+             fluidRow(
+               box(title = "Top Genres", width = 6, status = "primary", solidHeader = TRUE,
+                   plotOutput("overviewGenrePlot", height = "250px")),
+               box(title = "Time to Notability", width = 6, status = "success", solidHeader = TRUE,
+                   plotOutput("overviewTimeToNotabilityPlot", height = "250px"))
+             ),
+             fluidRow(
+               box(title = "Artists Profile Table", width = 12, status = "info", solidHeader = TRUE,
+                   DT::dataTableOutput("artists_table"))
+             )
+           ),
            
            "EDA" = tabsetPanel(
              tabPanel("Edge Types", plotOutput("edgeTypePlot")),
@@ -120,7 +247,7 @@ server <- function(input, output, session) {
              tabPanel("Notable Songs", plotOutput("notableSongsPlot"))
            ),
            
-           "Rising Stars" = DT::dataTableOutput("risingStarTable"),
+           "Artists Profiles" = DT::dataTableOutput("artists_table"),
            
            "Influence Network" = visNetworkOutput("influenceNetwork", height = "700px"),
            
@@ -153,14 +280,14 @@ server <- function(input, output, session) {
   })
   
   output$nodeTypePlot <- renderPlot({
-    ggplot(nodes_tbl_clean, aes(y = node_type)) +
+    ggplot(nodes_tbl, aes(y = node_type)) +
       geom_bar() +
       labs(title = "Distribution of Node Types", y = "Node Type", x = "Count") +
       theme_minimal()
   })
   
-  output$risingStarTable <- DT::renderDataTable({
-    rising_star_profile
+  output$artists_table <- DT::renderDataTable({
+    artists_profile
   })
   
   output$genreHeatmap <- renderPlotly({
@@ -217,9 +344,49 @@ server <- function(input, output, session) {
       scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
   })
   
-  output$risingStarTable <- DT::renderDataTable({
-    rising_star_profile
+  output$kpi_total_artists <- renderValueBox({
+    valueBox(
+      value = nrow(artists_profile),
+      subtitle = "Total Artists",
+      icon = icon("users"),
+      color = "purple"
+    )
   })
+  
+  output$kpi_total_notable <- renderValueBox({
+    valueBox(
+      value = sum(artists_profile$notable_works, na.rm = TRUE),
+      subtitle = "Total Notable Works",
+      icon = icon("star"),
+      color = "yellow"
+    )
+  })
+  
+  output$kpi_avg_time_to_notability <- renderValueBox({
+    avg_time <- mean(artists_profile$time_to_notability, na.rm = TRUE)
+    valueBox(
+      value = round(avg_time, 1),
+      subtitle = "Avg. Time to Notability (Years)",
+      icon = icon("clock"),
+      color = "teal"
+    )
+  })
+  
+  output$kpi_top_genre <- renderValueBox({
+    top_genre <- artist_works %>%
+      filter(!is.na(genre)) %>%
+      count(genre, sort = TRUE) %>%
+      slice_head(n = 1) %>%
+      pull(genre)
+    
+    valueBox(
+      value = top_genre,
+      subtitle = "Most Frequent Genre",
+      icon = icon("music"),
+      color = "olive"
+    )
+  })
+  
 }
 
 # ===== Run App =====
