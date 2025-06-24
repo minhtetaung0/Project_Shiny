@@ -144,7 +144,7 @@ vis_nodes <- nodes_tbl %>%
   mutate(
     label = name,
     group = ifelse(id == sailor_id, "Sailor Shift", node_type),
-    color = ifelse(id == sailor_id, "tomato", "gold")
+    color = ifelse(id == sailor_id, "darkblue", "skyblue")
   ) %>%
   select(id, label, group, color)
 
@@ -155,7 +155,7 @@ vis_edges <- sailor_edges %>%
 # ===== UI =====
 ui <- dashboardPage(
   skin = "purple",
-  dashboardHeader(title = "Oceanus Folk Influence Explorer"),
+  dashboardHeader(title = tags$strong(icon("music"), "FOLK FLOW")),
   
   dashboardSidebar(
     sidebarMenu(
@@ -247,7 +247,7 @@ ui <- dashboardPage(
       tabItem(tabName = "network",
               tabsetPanel(
                 tabPanel("Sailor Influence",  visNetworkOutput("sailorNetwork", height = "1000px")),
-              )
+              )                              
       
       ),
       
