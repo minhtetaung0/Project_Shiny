@@ -124,6 +124,35 @@ artists_profile <- artists_profile %>%
   inner_join(people_tbl, by = "person_id") %>%
   relocate(person_id, name)
 
+### ---- Get Sailor Shift ID ----
+sailor_id <- nodes_tbl %>% 
+  filter(str_detect(name, fixed("Sailor Shift", ignore_case = TRUE))) %>%
+  pull(id)
+print(sailor_id)
+
+# ---- Influence Edge Types ----
+influence_types <- c("LyricalReferenceTo", "CoverOf", "InterpolatesFrom", "DirectlySamples", "InStyleOf")
+
+# ---- Extract 1-hop Influence Edges ----
+sailor_edges <- edges_tbl %>%
+  filter(edge_type %in% influence_types, source == sailor_id | target == sailor_id)
+
+# ---- Get unique node IDs involved ----
+influence_ids <- unique(c(sailor_edges$source, sailor_edges$target))
+
+vis_nodes <- nodes_tbl %>%
+  filter(id %in% influence_ids) %>%
+  mutate(
+    label = name,
+    group = ifelse(id == sailor_id, "Sailor Shift", node_type),
+    color = ifelse(id == sailor_id, "tomato", "gold")
+  ) %>%
+  select(id, label, group, color)
+
+vis_edges <- sailor_edges %>%
+  select(from = source, to = target, label = edge_type) 
+
+
 # ===== UI =====
 ui <- dashboardPage(
   skin = "purple",
@@ -204,7 +233,7 @@ ui <- dashboardPage(
       ),
       
       tabItem(tabName = "network",
-              visNetworkOutput("influenceNetwork", height = "700px")
+              visNetworkOutput("sailorNetwork", height = "700px")
       ),
       
       tabItem(tabName = "cluster",
@@ -262,7 +291,7 @@ server <- function(input, output, session) {
            
            "Artists Profiles" = DT::dataTableOutput("artists_table"),
            
-           "Influence Network" = visNetworkOutput("influenceNetwork", height = "700px"),
+           "Influence Network" = visNetworkOutput("sailorNetwork", height = "700px"),
            
            "Cluster Analysis" = tagList(
              plotOutput("elbowPlot"),
@@ -398,6 +427,13 @@ server <- function(input, output, session) {
       icon = icon("music"),
       color = "olive"
     )
+  })
+  
+  output$sailorNetwork <- renderVisNetwork({
+    visNetwork(vis_nodes, vis_edges, height = "1000px", width = "100%") %>%
+      visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
+      visEdges(arrows = "to") %>%
+      visLayout(randomSeed = 42)
   })
   
 }
