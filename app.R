@@ -245,8 +245,9 @@ ui <- dashboardPage(
       ),
       
       tabItem(tabName = "network",
-              visNetworkOutput("sailorNetwork", height = "1000px")
-              
+              tabsetPanel(
+                tabPanel("Sailor Influence",  visNetworkOutput("sailorNetwork", height = "1000px")),
+              )
       
       ),
       
