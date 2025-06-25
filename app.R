@@ -250,7 +250,33 @@ ui <- dashboardPage(
       ),
       
       tabItem(tabName = "artists",
-              DT::dataTableOutput("artists_table")
+              fluidRow(
+                box(
+                  title = "Artist Filters", width = 3, status = "primary", solidHeader = TRUE,
+                  sliderInput("artist_year_range", "Select Year Range:",
+                              min = min(artist_works$release_date, na.rm = TRUE),
+                              max = max(artist_works$release_date, na.rm = TRUE),
+                              value = c(1990, 2005),
+                              step = 5, sep = ""),
+                  selectizeInput("selected_artists", "Select Artist(s):",
+                                 choices = sort(unique(artists_profile$name)),
+                                 selected = NULL, multiple = TRUE,
+                                 options = list(maxItems = 3))
+                ),
+                box(
+                  title = "Career Timeline & Ego Network", width = 9, status = "success", solidHeader = TRUE,
+                  tabsetPanel(
+                    tabPanel("Career Timeline", plotlyOutput("careerTimelinePlot", height = "300px")),
+                    tabPanel("Ego Network", visNetworkOutput("egoArtistNetwork", height = "300px"))
+                  )
+                )
+              ),
+              fluidRow(
+                box(
+                  title = "Artist Work & Collaboration Table", width = 12, status = "info", solidHeader = TRUE,
+                  DT::dataTableOutput("artistWorksTable")
+                )
+              )
       ),
       
       tabItem(tabName = "network",
