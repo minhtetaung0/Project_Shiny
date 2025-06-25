@@ -256,17 +256,22 @@ ui <- dashboardPage(
                   sliderInput("artist_year_range", "Select Year Range:",
                               min = min(artist_works$release_date, na.rm = TRUE),
                               max = max(artist_works$release_date, na.rm = TRUE),
-                              value = c(1990, 2005),
+                              value = c(1975, 2040),
                               step = 5, sep = ""),
-                  selectizeInput("selected_artists", "Select Artist(s):",
+                  selectizeInput("selected_artists", "Select Artist(s) up to 3:",
                                  choices = sort(unique(artists_profile$name)),
-                                 selected = NULL, multiple = TRUE,
-                                 options = list(maxItems = 3))
+                                 selected = c("Sailor Shift"), 
+                                 multiple = TRUE,
+                                 options = list(maxItems = 3)),
+                  radioButtons("ego_hop", "Ego Network Hop Level:",
+                               choices = c("1-hop", "2-hop"),
+                               selected = "1-hop")
                 ),
                 box(
                   title = "Career Timeline & Ego Network", width = 9, status = "success", solidHeader = TRUE,
                   tabsetPanel(
                     tabPanel("Career Timeline", plotlyOutput("careerTimelinePlot", height = "500px")),
+                    tabPanel("Artist Work Count", plotlyOutput("artistsWorkcountTimeline", height = "500px")),
                     tabPanel("Ego Network", visNetworkOutput("egoArtistNetwork", height = "500px"))
                   )
                 )
@@ -274,7 +279,7 @@ ui <- dashboardPage(
               fluidRow(
                 box(
                   title = "Artist Work & Collaboration Table", width = 12, status = "info", solidHeader = TRUE,
-                  DT::dataTableOutput("artistWorksTable")
+                  DT::dataTableOutput("artists_table")
                 )
               )
       ),
@@ -601,8 +606,156 @@ server <- function(input, output, session) {
   
   # ================= Artists Profile Page =======================
   
-  output$artists_table <- DT::renderDataTable({
-    artists_profile
+  output$careerTimelinePlot <- renderPlotly({
+    req(input$selected_artists)
+    
+    # Step 1: Prepare top 6 genres in selected subset
+    top_genres <- artist_works %>%
+      left_join(people_tbl, by = "person_id") %>%
+      filter(name %in% input$selected_artists) %>%
+      count(genre, sort = TRUE) %>%
+      slice_head(n = 6) %>%
+      pull(genre)
+    
+    levels_genre_rev <- sort(top_genres, decreasing = TRUE)
+    
+    # Step 2: Prepare filtered data
+    artist_subset <- artist_works %>%
+      left_join(people_tbl, by = "person_id") %>%
+      filter(name %in% input$selected_artists,
+             release_date >= input$artist_year_range[1],
+             release_date <= input$artist_year_range[2],
+             genre %in% top_genres) %>%
+      mutate(
+        genre = factor(genre, levels = levels_genre_rev),
+        notable = as.logical(notable),
+        label = paste0("Artist: ", name,
+                       "<br>Year: ", release_date,
+                       "<br>Genre: ", genre,
+                       ifelse(notable, "<br><b>Notable</b>", ""))
+      )
+    
+    # Step 3: Plot
+    p <- ggplot(
+      artist_subset,
+      aes(x = release_date, y = name, shape = genre, color = notable, text = label)
+    ) +
+      geom_jitter(width = 0.3, height = 0.3, size = 3, alpha = 0.7) +
+      scale_color_manual(values = c(`TRUE` = "#a1d99b", `FALSE` = "#fcbba1")) +
+      labs(
+        title  = "Career Timelines (Top Genres Sorted Z–A)",
+        x = "Release Year",
+        y = "Artist",
+        shape = "Genre",
+        color = "Notable"
+      ) +
+      theme_minimal() +
+      theme(plot.title = element_text(hjust = 0.5))
+    
+    ggplotly(p, tooltip = "text")
+  })
+  
+  
+  output$artistsWorkcountTimeline <- renderPlotly({
+    req(input$selected_artists)
+    
+    # Prepare data: count works by artist and release year
+    count_data <- artist_works %>%
+      left_join(people_tbl, by = "person_id") %>%
+      filter(name %in% input$selected_artists,
+             release_date >= input$artist_year_range[1],
+             release_date <= input$artist_year_range[2]) %>%
+      group_by(name, release_date) %>%
+      summarise(work_count = n(), .groups = "drop")
+    
+    # Plot line chart of works per year
+    p <- ggplot(count_data, aes(x = release_date, y = work_count, color = name)) +
+      geom_line(size = 1.2) +
+      geom_point(size = 2) +
+      labs(
+        title = "Number of Works per Year",
+        x = "Release Year",
+        y = "Count",
+        color = "Artist"
+      ) +
+      theme_minimal() +
+      theme(plot.title = element_text(hjust = 0.5))
+    
+    ggplotly(p)
+  })
+  
+  
+  output$egoArtistNetwork <- renderVisNetwork({
+    req(input$selected_artists)
+    
+    # Step 1: Get artist nodes
+    ego_artist_nodes <- nodes_tbl %>%
+      filter(node_type == "Person", name %in% input$selected_artists) %>%
+      left_join(id_map, by = c("id" = "id")) %>%
+      select(artist_name = name, artist_id = id, index)
+    
+    ego_ids <- ego_artist_nodes$artist_id
+    req(length(ego_ids) > 0)
+    
+    # Step 2: Subset the graph manually using edges
+    all_edges <- as_tibble(edges_tbl_mapped)
+    if (input$ego_hop == "2-hop") {
+      # First hop
+      first_hop <- all_edges %>% filter(source %in% ego_ids | target %in% ego_ids)
+      first_hop_ids <- unique(c(first_hop$source, first_hop$target))
+      
+      # Second hop
+      second_hop <- all_edges %>% filter(source %in% first_hop_ids | target %in% first_hop_ids)
+      second_hop_ids <- unique(c(second_hop$source, second_hop$target))
+      
+      final_ids <- unique(c(ego_ids, first_hop_ids, second_hop_ids))
+      final_edges <- all_edges %>% filter(source %in% final_ids & target %in% final_ids)
+    } else {
+      final_edges <- all_edges %>% filter(source %in% ego_ids | target %in% ego_ids)
+      final_ids <- unique(c(final_edges$source, final_edges$target, ego_ids))
+    }
+    
+    # Step 3: Filter nodes
+    nodes_data <- nodes_tbl %>%
+      filter(id %in% final_ids) %>%
+      mutate(
+        label = ifelse(!is.na(name), name, node_type),
+        group = node_type,
+        title = paste0("<b>", label, "</b><br>Type: ", node_type)
+      ) %>%
+      select(id, label, group, title)
+    
+    # Step 4: Prepare edges data
+    edges_data <- final_edges %>%
+      mutate(
+        from = source,
+        to = target,
+        title = paste("Edge Type:", edge_type),
+        label = edge_type
+      ) %>%
+      select(from, to, label, title)
+    
+    # Step 5: Render visNetwork
+    visNetwork(nodes_data, edges_data, height = "500px", width = "100%") %>%
+      visOptions(
+        highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
+        nodesIdSelection = TRUE
+      ) %>%
+      visInteraction(navigationButtons = TRUE) %>%
+      visLayout(randomSeed = 42) %>%
+      visLegend(
+        useGroups = TRUE,
+        position = "right",
+        main = "Node Type"
+      )
+  })
+  
+  
+  output$artists_table <-  DT::renderDataTable({
+    datatable(
+      artists_profile,
+      options = list(scrollX = TRUE, pageLength = 10)
+    )
   })
   
   # ================= End of Artists Profile Page =======================
