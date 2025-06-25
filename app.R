@@ -182,23 +182,24 @@ ui <- dashboardPage(
                 valueBoxOutput("kpi_top_genre")
               ),
               fluidRow(
-                box(title = "Genre Percentage (Donut Chart)", width = 7, status = "warning", solidHeader = TRUE,
-                    fluidRow(
-                      column(width = 4,
-                             sliderInput("donut_year_range", "Select Year Range:",
-                                         min = min(artist_works$release_date, na.rm = TRUE),
-                                         max = max(artist_works$release_date, na.rm = TRUE),
-                                         value = c(1990, 2000),
-                                         step = 5,
-                                         sep = "")
-                      ),
-                      column(width = 8,
-                             plotlyOutput("genreDonutPlot", height = "300px")
-                      )
-                    )
+                box(title = "Year Range and Genre Selector", width = 2, status = "warning", solidHeader = TRUE,
+                    sliderInput("donut_year_range", "Select Year Range:",
+                                  min = min(artist_works$release_date, na.rm = TRUE),
+                                  max = max(artist_works$release_date, na.rm = TRUE),
+                                  value = c(1990, 2000),
+                                  step = 5,
+                                  sep = ""),
+                    selectizeInput("selected_genres", "Select up to 3 Genres:",
+                                   choices = unique(artist_works$genre),
+                                   selected = c("Oceanus Folk"),
+                                   multiple = TRUE,
+                                   options = list(maxItems = 3))
                 ),
-                box(title = "Time to Notability", width = 5, status = "success", solidHeader = TRUE,
-                    plotOutput("overviewTimeToNotabilityPlot", height = "250px"))
+                box(title = "Genre Percentage (Donut Chart)", width = 5, status = "warning", solidHeader = TRUE,
+                             plotlyOutput("genreDonutPlot", height = "300px")
+                ),
+                box(title = "Genre Comparison Over Time", width = 5, status = "success", solidHeader = TRUE,
+                    plotlyOutput("genreTimelinePlot", height = "250px"))
               ),
               fluidRow(
                 box(title = "Artists Profile Table", width = 12, status = "info", solidHeader = TRUE,
@@ -275,6 +276,27 @@ ui <- dashboardPage(
 
 # ===== Server =====
 server <- function(input, output, session) {
+  
+  output$genreTimelinePlot <- renderPlotly({
+    req(input$donut_year_range, input$selected_genres)
+    
+    timeline_data <- artist_works %>%
+      filter(genre %in% input$selected_genres,
+             release_date >= input$donut_year_range[1],
+             release_date <= input$donut_year_range[2]) %>%
+      count(genre, release_date) %>%
+      ungroup()
+    
+    p <- ggplot(timeline_data, aes(x = release_date, y = n, color = genre)) +
+      geom_line(size = 1.2) +
+      geom_point(size = 2) +
+      labs(title = "Song Releases Over Time by Genre",
+           x = "Year", y = "Number of Songs") +
+      theme_minimal() +
+      theme(plot.title = element_text(hjust = 0.5))
+    
+    ggplotly(p)
+  })
   
   output$edgeTypePlot <- renderPlot({
     ggplot(edges_tbl_mapped, aes(y = edge_type)) +
