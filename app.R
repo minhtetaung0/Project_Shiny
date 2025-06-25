@@ -130,7 +130,8 @@ sailor_id <- nodes_tbl %>%
   pull(id)
 
 # ---- Influence Edge Types ----
-influence_types <- c("LyricalReferenceTo", "CoverOf", "InterpolatesFrom", "DirectlySamples", "InStyleOf")
+influence_types <- c("LyricalReferenceTo", "CoverOf", "InterpolatesFrom", "DirectlySamples", "InStyleOf", 
+                     "PerformerOf", "ComposerOf", "LyricistOf", "ProducerOf", "RecordedBy")
 
 # ---- Extract 1-hop Influence Edges ----
 sailor_edges <- edges_tbl %>%
@@ -248,11 +249,28 @@ ui <- dashboardPage(
       ),
       
       tabItem(tabName = "network",
-              tabsetPanel(
-                tabPanel("Sailor Influence",  visNetworkOutput("sailorNetwork", height = "1000px")),
-              )                              
+              fluidRow(
+                box(
+                  width = 3,
+                  title = "Filter Options",
+                  status = "primary",
+                  solidHeader = TRUE,
+                  selectInput("hop_level", "Select hop level:",
+                              choices = c("1-hop", "2-hop"), selected = "2-hop"),
+                  selectizeInput("influence_types_selected", "Select influence types:",
+                                 choices = influence_types,
+                                 selected = influence_types[0],
+                                 multiple = TRUE)
+                ),
+                box(
+                  width = 9,
+                  title = "Sailor Shift Influence Network",
+                  status = "primary",
+                  solidHeader = TRUE,
+                  visNetworkOutput("dynamicSailorNetwork", height = "800px")
+                )
       
-      ),
+      )),
       
       tabItem(tabName = "cluster",
               plotOutput("elbowPlot"),
@@ -509,12 +527,56 @@ server <- function(input, output, session) {
   
   
   # ================= Influence Network Page =======================
-  output$sailorNetwork <- renderVisNetwork({
-    visNetwork(vis_nodes, vis_edges, height = "1000px", width = "100%") %>%
+  output$dynamicSailorNetwork <- renderVisNetwork({
+    req(input$influence_types_selected)
+    
+    sailor_id <- nodes_tbl %>% 
+      filter(str_detect(name, fixed("Sailor Shift", ignore_case = TRUE))) %>%
+      pull(id)
+    
+    selected_types <- input$influence_types_selected  # ✅ FIXED ID
+    
+    sailor_edges <- edges_tbl %>%
+      filter(edge_type %in% selected_types,
+             source == sailor_id | target == sailor_id)
+    
+    first_hop_ids <- unique(c(sailor_edges$source, sailor_edges$target))
+    
+    if (input$hop_level == "2-hop") {  # ✅ Compare to string value
+      second_hop_edges <- edges_tbl %>%
+        filter(edge_type %in% selected_types,
+               source %in% first_hop_ids | target %in% first_hop_ids)
+      
+      all_edges <- bind_rows(sailor_edges, second_hop_edges) %>% distinct()
+    } else {
+      all_edges <- sailor_edges
+    }
+    
+    all_ids <- unique(c(all_edges$source, all_edges$target))
+    
+    vis_nodes <- nodes_tbl %>%
+      filter(id %in% all_ids, node_type %in% c("Person", "MusicalGroup")) %>%
+      mutate(
+        label = name,
+        group = ifelse(id == sailor_id, "Sailor Shift", node_type),
+        color = ifelse(id == sailor_id, "darkblue", "lightblue")
+      ) %>%
+      select(id, label, group, color)
+    
+    valid_ids <- vis_nodes$id
+    vis_edges <- all_edges %>%
+      filter(source %in% valid_ids, target %in% valid_ids) %>%
+      select(from = source, to = target, label = edge_type)
+    
+    connected_ids <- unique(c(vis_edges$from, vis_edges$to))
+    vis_nodes <- vis_nodes %>% filter(id %in% connected_ids)
+    
+    visNetwork(vis_nodes, vis_edges, height = "800px", width = "100%") %>%
       visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
       visEdges(arrows = "to", font = list(size = 10)) %>%
-      visNodes(font = list(size = 10), size = 30) %>%  # adjust font and node size
-      visLayout(randomSeed = 42)
+      visNodes(font = list(size = 10), size = 25) %>%
+      visLayout(randomSeed = 123) %>%
+      visPhysics(stabilization = TRUE)
   })
   
   # ================= End of Influence Network Page =======================
