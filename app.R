@@ -196,7 +196,10 @@ ui <- dashboardPage(
                                    choices = unique(artist_works$genre),
                                    selected = c("Oceanus Folk"),
                                    multiple = TRUE,
-                                   options = list(maxItems = 3))
+                                   options = list(maxItems = 3)),
+                    div(style = "margin-top: 10px;",
+                        actionButton("toggle_total_line", "Total Songs Overtime",
+                                     class = "btn-info btn-block"))
                 ),
                 box(title = "Genre Percentage (Donut Chart)", width = 5, status = "warning", solidHeader = TRUE,
                              plotlyOutput("genreDonutPlot", height = "300px")
@@ -206,7 +209,7 @@ ui <- dashboardPage(
               ),
               fluidRow(
                 box(title = "Artists Profile Table", width = 12, status = "info", solidHeader = TRUE,
-                    DT::dataTableOutput("artists_table"))
+                    DT::dataTableOutput("overview_artists_table"))
               )
       ),
       
@@ -415,27 +418,48 @@ server <- function(input, output, session) {
   })
   
   # === Genre Timeline Plot ===
+  
+  show_total <- reactiveVal(FALSE)
+  
+  observeEvent(input$toggle_total_line, {
+    show_total(!show_total())
+  })
+  
   output$genreTimelinePlot <- renderPlotly({
     req(input$donut_year_range, input$selected_genres)
     
     timeline_data <- artist_works %>%
-      filter(genre %in% input$selected_genres,
-             release_date >= input$donut_year_range[1],
-             release_date <= input$donut_year_range[2]) %>%
-      count(genre, release_date) %>%
-      ungroup()
+      filter(release_date >= input$donut_year_range[1],
+             release_date <= input$donut_year_range[2])
     
-    p <- ggplot(timeline_data, aes(x = release_date, y = n, color = genre)) +
-      geom_line(size = 0.8) +
-      geom_point(size = 1.2) +
-      labs(title = "Song Releases Over Time by Genre",
-           x = "Year", y = "Number of Songs") +
+    genre_lines <- timeline_data %>%
+      filter(genre %in% input$selected_genres) %>%
+      count(genre, release_date) %>%
+      mutate(type = "Genre")
+    
+    total_line <- timeline_data %>%
+      count(release_date) %>%
+      mutate(genre = "Total", type = "Total")
+    
+    combined_data <- genre_lines
+    if (show_total()) {
+      combined_data <- bind_rows(genre_lines, total_line)
+    }
+    
+    p <- ggplot(combined_data, aes(x = release_date, y = n, color = genre, linetype = type)) +
+      geom_line(size = 0.9) +
+      geom_point(size = 1.5) +
+      labs(title = "Song Releases Over Time",
+           x = "Year", y = "Number of Songs", color = "Genre") +
       theme_minimal() +
       theme(plot.title = element_text(hjust = 0.5))
     
     ggplotly(p)
   })
   
+  output$overview_artists_table <- DT::renderDataTable({
+    artists_profile
+  })
   
   # === End of Plots Boxes ===
   
