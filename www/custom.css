@@ -72,3 +72,23 @@
   box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
   margin-top: 10px;
 }
+
+.custom-box-green .box-header {
+  background-color: #3a6649 !important; /* lavender purple */
+  color: white !important;
+}
+
+.custom-box-pink .box-header {
+  background-color: #d291bc !important; /* soft pink */
+  color: white !important;
+}
+
+.sidebar-menu .treeview-menu > li > a {
+  background-color: #e8d6e2 !important;  /* or any other light purple */
+  color: white !important;
+}
+
+.sidebar-menu .treeview-menu > li.active > a {
+  background-color: #A980B3 !important;
+  color: white !important;
+}

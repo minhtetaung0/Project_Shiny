@@ -163,7 +163,9 @@ ui <- dashboardPage(
       menuItem("Overview", tabName = "overview", icon = icon("dashboard")),
       menuItem("EDA", tabName = "eda", icon = icon("chart-bar")),
       menuItem("Artists Profiles", tabName = "artists", icon = icon("users")),
-      menuItem("Influence Network", tabName = "network", icon = icon("project-diagram")),
+      menuItem("Influence Network", icon = icon("project-diagram"), startExpanded = FALSE,
+        menuSubItem("Who has Sailor influenced?", tabName = "network"),
+        menuSubItem("Who has influenced Sailor?", tabName = "")),
       menuItem("Cluster Analysis", tabName = "cluster", icon = icon("layer-group")),
       menuItem("Artist Comparison", tabName = "compare", icon = icon("user-friends")),
       menuItem("Future Predictions", tabName = "future", icon = icon("chart-line"))
@@ -250,27 +252,29 @@ ui <- dashboardPage(
       
       tabItem(tabName = "network",
               fluidRow(
-                box(
-                  width = 3,
-                  title = "Filter Options",
-                  status = "primary",
-                  solidHeader = TRUE,
-                  selectInput("hop_level", "Select hop level:",
-                              choices = c("1-hop", "2-hop"), selected = "2-hop"),
-                  selectizeInput("influence_types_selected", "Select influence types:",
-                                 choices = influence_types,
-                                 selected = influence_types[0],
-                                 multiple = TRUE)
+                div(class = "custom-box-green",
+                    box(
+                      width = 3,
+                      title = "Filter Options",
+                      solidHeader = TRUE,
+                      selectInput("hop_level", "Select hop level:",
+                                  choices = c("1-hop", "2-hop"), selected = "2-hop"),
+                      selectizeInput("influence_types_selected", "Select influence types:",
+                                     choices = influence_types,
+                                     selected = influence_types,
+                                     multiple = TRUE)
+                    )
                 ),
-                box(
-                  width = 9,
-                  title = "Sailor Shift Influence Network",
-                  status = "primary",
-                  solidHeader = TRUE,
-                  visNetworkOutput("dynamicSailorNetwork", height = "800px")
+                div(class = "custom-box-green",
+                  box(
+                    width = 9,
+                    title = "Sailor Shift Influence Network",
+                    solidHeader = TRUE,
+                    visNetworkOutput("dynamicSailorNetwork", height = "800px")
                 )
-      
-      )),
+              )
+      ))
+      ,
       
       tabItem(tabName = "cluster",
               plotOutput("elbowPlot"),
