@@ -347,7 +347,7 @@ server <- function(input, output, session) {
       value = round(avg_members, 1),
       subtitle = "Avg. Members per Group",
       icon = icon("user-friends"),
-      color = "navy"
+      color = "fuchsia"
     )
   })
   
