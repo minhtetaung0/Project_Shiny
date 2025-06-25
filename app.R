@@ -266,8 +266,8 @@ ui <- dashboardPage(
                 box(
                   title = "Career Timeline & Ego Network", width = 9, status = "success", solidHeader = TRUE,
                   tabsetPanel(
-                    tabPanel("Career Timeline", plotlyOutput("careerTimelinePlot", height = "300px")),
-                    tabPanel("Ego Network", visNetworkOutput("egoArtistNetwork", height = "300px"))
+                    tabPanel("Career Timeline", plotlyOutput("careerTimelinePlot", height = "500px")),
+                    tabPanel("Ego Network", visNetworkOutput("egoArtistNetwork", height = "500px"))
                   )
                 )
               ),
