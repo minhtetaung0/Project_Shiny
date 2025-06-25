@@ -165,7 +165,7 @@ ui <- dashboardPage(
       menuItem("Artists Profiles", tabName = "artists", icon = icon("users")),
       menuItem("Influence Network", icon = icon("project-diagram"), startExpanded = FALSE,
         menuSubItem("Who has Sailor influenced?", tabName = "network"),
-        menuSubItem("Who has influenced Sailor?", tabName = "")),
+        menuSubItem("Who has influenced Sailor?", tabName = "sailor_influencers")),
       menuItem("Cluster Analysis", tabName = "cluster", icon = icon("layer-group")),
       menuItem("Artist Comparison", tabName = "compare", icon = icon("user-friends")),
       menuItem("Future Predictions", tabName = "future", icon = icon("chart-line"))
@@ -303,6 +303,34 @@ ui <- dashboardPage(
                 )
               )
       ))
+      ,
+      
+      tabItem(tabName = "sailor_influencers",
+              fluidRow(
+                div(class = "custom-box-green" ,
+                box(
+                  title = "Filter Influences",
+                  width = 3,
+                  status = "success",
+                  solidHeader = TRUE,
+                  checkboxGroupInput("influencer_type_input", "Influencer Type:",
+                                     choices = c("Person", "MusicalGroup", "RecordLabel"),
+                                     selected = c("Person", "MusicalGroup", "RecordLabel")),
+                  
+                  checkboxGroupInput("edge_type_input", "Influence Type:",
+                                     choices = influence_types,
+                                     selected = influence_types)
+                )),
+                div(class = "custom-box-green",
+                  box(
+                    title = "Who Has Influenced Sailor Over Time?",
+                    width = 9,
+                    status = "info",
+                    solidHeader = TRUE,
+                    plotlyOutput("influencerTimelinePlot", height = "500px")
+                ))
+              )
+      )
       ,
       
       tabItem(tabName = "cluster",
@@ -632,6 +660,66 @@ server <- function(input, output, session) {
       visLayout(randomSeed = 123) %>%
       visPhysics(stabilization = TRUE)
   })
+  
+  # ==== Preprocessing: Who Influenced Sailor ====
+  filtered_influencers <- reactive({
+    # Contribution edge types
+    contribution_types <- c("PerformerOf", "ComposerOf", "LyricistOf", "ProducerOf", "RecordedBy")
+    
+    # Step 1: Filter edges to Sailor
+    sailor_in_edges <- edges_tbl %>%
+      filter(edge_type %in% input$edge_type_input, target == sailor_id)
+    
+    # Step 2: Influencer details
+    sailor_influencers <- sailor_in_edges %>%
+      left_join(nodes_tbl, by = c("source" = "id")) %>%
+      filter(node_type %in% input$influencer_type_input) %>%
+      select(influencer_id = source, influencer_name = name, influencer_type = node_type, edge_type)
+    
+    # Step 3: Contributions with release year
+    influencer_songs <- edges_tbl %>%
+      filter(edge_type %in% contribution_types) %>%
+      semi_join(sailor_influencers, by = c("source" = "influencer_id")) %>%
+      left_join(nodes_tbl, by = c("target" = "id")) %>%
+      filter(node_type %in% c("Song", "Album"), !is.na(release_date)) %>%
+      mutate(release_date = as.integer(release_date)) %>%
+      select(influencer_id = source, release_date)
+    
+    # Step 4: Merge earliest release
+    influencer_earliest <- influencer_songs %>%
+      group_by(influencer_id) %>%
+      summarise(earliest_release = min(release_date), .groups = "drop")
+    
+    # Final join
+    sailor_influencers %>%
+      left_join(influencer_earliest, by = "influencer_id") %>%
+      filter(!is.na(earliest_release))
+  })
+  
+  
+  
+  output$influencerTimelinePlot <- renderPlotly({
+    data <- filtered_influencers()
+    req(nrow(data) > 0)
+    
+    p <- ggplot(data, aes(x = earliest_release,
+                          y = fct_reorder(influencer_name, earliest_release),
+                          color = influencer_type,
+                          text = paste("Name:", influencer_name, "<br>Year:", earliest_release))) +
+      geom_segment(aes(xend = earliest_release, yend = influencer_name),
+                   x = min(data$earliest_release) - 1, color = "gray70") +
+      geom_point(size = 4) +
+      scale_color_brewer(palette = "Dark2") +
+      labs(title = "Who Has Influenced Sailor Over Time?",
+           subtitle = "Sorted by earliest known song/album contribution",
+           x = "Earliest Release Year", y = "Influencer") +
+      theme_minimal(base_size = 13) +
+      theme(plot.title = element_text(face = "bold", size = 16),
+            legend.position = "right")
+    
+    ggplotly(p, tooltip = "text")
+  })
+  
   
   # ================= End of Influence Network Page =======================
   
