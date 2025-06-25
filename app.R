@@ -179,6 +179,8 @@ ui <- dashboardPage(
                 valueBoxOutput("kpi_total_artists"),
                 valueBoxOutput("kpi_total_notable"),
                 valueBoxOutput("kpi_avg_time_to_notability"),
+                valueBoxOutput("kpi_total_groups"),
+                valueBoxOutput("kpi_avg_members"),
                 valueBoxOutput("kpi_top_genre")
               ),
               fluidRow(
@@ -199,7 +201,7 @@ ui <- dashboardPage(
                              plotlyOutput("genreDonutPlot", height = "300px")
                 ),
                 box(title = "Genre Comparison Over Time", width = 5, status = "success", solidHeader = TRUE,
-                    plotlyOutput("genreTimelinePlot", height = "250px"))
+                    plotlyOutput("genreTimelinePlot", height = "300px"))
               ),
               fluidRow(
                 box(title = "Artists Profile Table", width = 12, status = "info", solidHeader = TRUE,
@@ -277,6 +279,124 @@ ui <- dashboardPage(
 # ===== Server =====
 server <- function(input, output, session) {
   
+  
+  # ================= Overview Page =======================
+  
+  # === Vale Boxes Calculations for Overview Page ===
+  
+  output$kpi_total_artists <- renderValueBox({
+    valueBox(
+      value = nrow(artists_profile),
+      subtitle = "Total Artists",
+      icon = icon("users"),
+      color = "purple"
+    )
+  })
+  
+  output$kpi_total_notable <- renderValueBox({
+    valueBox(
+      value = sum(artists_profile$notable_works, na.rm = TRUE),
+      subtitle = "Total Notable Works",
+      icon = icon("star"),
+      color = "yellow"
+    )
+  })
+  
+  output$kpi_avg_time_to_notability <- renderValueBox({
+    avg_time <- mean(artists_profile$time_to_notability, na.rm = TRUE)
+    valueBox(
+      value = round(avg_time, 1),
+      subtitle = "Avg. Time to Notability (Years)",
+      icon = icon("clock"),
+      color = "teal"
+    )
+  })
+  
+  output$kpi_top_genre <- renderValueBox({
+    top_genre <- artist_works %>%
+      filter(!is.na(genre)) %>%
+      count(genre, sort = TRUE) %>%
+      slice_head(n = 1) %>%
+      pull(genre)
+    
+    valueBox(
+      value = top_genre,
+      subtitle = "Most Frequent Genre",
+      icon = icon("music"),
+      color = "olive"
+    )
+  })
+  
+  output$kpi_total_groups <- renderValueBox({
+    group_count <- nodes_tbl %>% filter(node_type == "MusicalGroup") %>% nrow()
+    valueBox(
+      value = group_count,
+      subtitle = "Total Musical Groups",
+      icon = icon("people-group"),
+      color = "maroon"
+    )
+  })
+  
+  output$kpi_avg_members <- renderValueBox({
+    member_links <- edges_tbl_mapped %>% filter(edge_type == "MemberOf")
+    avg_members <- member_links %>%
+      count(to) %>%
+      summarise(avg = mean(n, na.rm = TRUE)) %>%
+      pull(avg)
+    valueBox(
+      value = round(avg_members, 1),
+      subtitle = "Avg. Members per Group",
+      icon = icon("user-friends"),
+      color = "navy"
+    )
+  })
+  
+  # === End of Value Box ===
+  
+  # === Genre Donut, Genre Time Line Boxes ===
+  
+  # === Genre Donut ===
+  output$genreDonutPlot <- renderPlotly({
+    # Filter data by selected year range
+    filtered <- artist_works %>%
+      filter(release_date >= input$donut_year_range[1],
+             release_date <= input$donut_year_range[2]) %>%
+      filter(!is.na(genre))
+    
+    # Aggregate and simplify labels
+    genre_counts <- filtered %>%
+      count(genre, sort = TRUE) %>%
+      mutate(
+        pct = round(100 * n / sum(n), 1),
+        label = genre,
+        hover_label = paste0(genre, ": ", pct, "%")
+      )
+    
+    # Optional: Group small genres into "Others"
+    genre_counts <- genre_counts %>%
+      mutate(group = ifelse(pct < 3, "Other", genre)) %>%
+      group_by(group) %>%
+      summarise(n = sum(n), .groups = "drop") %>%
+      mutate(
+        pct = round(100 * n / sum(n), 1),
+        hover_label = paste0(group, ": ", pct, "%")
+      )
+    
+    # Plot
+    plot_ly(genre_counts,
+            labels = ~group,
+            values = ~n,
+            type = 'pie',
+            hole = 0.5,
+            textinfo = "none",  # hides cluttered labels
+            hoverinfo = "text",
+            text = ~hover_label,
+            marker = list(line = list(color = '#FFFFFF', width = 1))) %>%
+      layout(title = list(text = "Genre Share by Selected Years", x = 0.5),
+             showlegend = TRUE)
+  })
+  
+  # === Genre Timeline Plot ===
   output$genreTimelinePlot <- renderPlotly({
     req(input$donut_year_range, input$selected_genres)
     
@@ -288,8 +408,8 @@ server <- function(input, output, session) {
       ungroup()
     
     p <- ggplot(timeline_data, aes(x = release_date, y = n, color = genre)) +
-      geom_line(size = 1.2) +
-      geom_point(size = 2) +
+      geom_line(size = 0.8) +
+      geom_point(size = 1.2) +
       labs(title = "Song Releases Over Time by Genre",
            x = "Year", y = "Number of Songs") +
       theme_minimal() +
@@ -297,6 +417,15 @@ server <- function(input, output, session) {
     
     ggplotly(p)
   })
+  
+  
+  # === End of Plots Boxes ===
+  
+  
+  # ================== End of Overview Page =====================
+  
+  
+  # ==================== EDA Page ======================
   
   output$edgeTypePlot <- renderPlot({
     ggplot(edges_tbl_mapped, aes(y = edge_type)) +
@@ -312,9 +441,6 @@ server <- function(input, output, session) {
       theme_minimal()
   })
   
-  output$artists_table <- DT::renderDataTable({
-    artists_profile
-  })
   
   output$genreHeatmap <- renderPlotly({
     heatmap_data <- nodes_tbl %>%
@@ -370,49 +496,19 @@ server <- function(input, output, session) {
       scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
   })
   
-  output$kpi_total_artists <- renderValueBox({
-    valueBox(
-      value = nrow(artists_profile),
-      subtitle = "Total Artists",
-      icon = icon("users"),
-      color = "purple"
-    )
+  # ================== End of EDA Page =====================
+  
+  
+  # ================= Artists Profile Page =======================
+  
+  output$artists_table <- DT::renderDataTable({
+    artists_profile
   })
   
-  output$kpi_total_notable <- renderValueBox({
-    valueBox(
-      value = sum(artists_profile$notable_works, na.rm = TRUE),
-      subtitle = "Total Notable Works",
-      icon = icon("star"),
-      color = "yellow"
-    )
-  })
+  # ================= End of Artists Profile Page =======================
   
-  output$kpi_avg_time_to_notability <- renderValueBox({
-    avg_time <- mean(artists_profile$time_to_notability, na.rm = TRUE)
-    valueBox(
-      value = round(avg_time, 1),
-      subtitle = "Avg. Time to Notability (Years)",
-      icon = icon("clock"),
-      color = "teal"
-    )
-  })
   
-  output$kpi_top_genre <- renderValueBox({
-    top_genre <- artist_works %>%
-      filter(!is.na(genre)) %>%
-      count(genre, sort = TRUE) %>%
-      slice_head(n = 1) %>%
-      pull(genre)
-    
-    valueBox(
-      value = top_genre,
-      subtitle = "Most Frequent Genre",
-      icon = icon("music"),
-      color = "olive"
-    )
-  })
-  
+  # ================= Influence Network Page =======================
   output$sailorNetwork <- renderVisNetwork({
     visNetwork(vis_nodes, vis_edges, height = "1000px", width = "100%") %>%
       visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
@@ -421,45 +517,9 @@ server <- function(input, output, session) {
       visLayout(randomSeed = 42)
   })
   
-  output$genreDonutPlot <- renderPlotly({
-    # Filter data by selected year range
-    filtered <- artist_works %>%
-      filter(release_date >= input$donut_year_range[1],
-             release_date <= input$donut_year_range[2]) %>%
-      filter(!is.na(genre))
-    
-    # Aggregate and simplify labels
-    genre_counts <- filtered %>%
-      count(genre, sort = TRUE) %>%
-      mutate(
-        pct = round(100 * n / sum(n), 1),
-        label = genre,
-        hover_label = paste0(genre, ": ", pct, "%")
-      )
-    
-    # Optional: Group small genres into "Others"
-    genre_counts <- genre_counts %>%
-      mutate(group = ifelse(pct < 3, "Other", genre)) %>%
-      group_by(group) %>%
-      summarise(n = sum(n), .groups = "drop") %>%
-      mutate(
-        pct = round(100 * n / sum(n), 1),
-        hover_label = paste0(group, ": ", pct, "%")
-      )
-    
-    # Plot
-    plot_ly(genre_counts,
-            labels = ~group,
-            values = ~n,
-            type = 'pie',
-            hole = 0.5,
-            textinfo = "none",  # hides cluttered labels
-            hoverinfo = "text",
-            text = ~hover_label,
-            marker = list(line = list(color = '#FFFFFF', width = 1))) %>%
-      layout(title = list(text = "Genre Share by Selected Years", x = 0.5),
-             showlegend = TRUE)
-  })
+  # ================= End of Influence Network Page =======================
+  
+  
   
   
 }
