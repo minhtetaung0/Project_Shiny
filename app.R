@@ -329,29 +329,27 @@ ui <- dashboardPage(
       
       tabItem(tabName = "sailor_influencers",
               fluidRow(
-                div(class = "custom-box-green" ,
-                box(
-                  title = "Filter Influences",
-                  width = 3,
-                  status = "success",
-                  solidHeader = TRUE,
-                  checkboxGroupInput("influencer_type_input", "Influencer Type:",
-                                     choices = c("Person", "MusicalGroup", "RecordLabel"),
-                                     selected = c("Person", "MusicalGroup", "RecordLabel")),
-                  
-                  checkboxGroupInput("edge_type_input", "Influence Type:",
-                                     choices = influence_types,
-                                     selected = influence_types)
-                )),
                 div(class = "custom-box-green",
-                  box(
-                    title = "Who Has Influenced Sailor Over Time?",
-                    width = 9,
-                    status = "info",
-                    solidHeader = TRUE,
-                    plotlyOutput("influencerTimelinePlot", height = "500px")
-                ))
-              )
+                    box(
+                      title = "Filter Influence Types",
+                      width = 3,
+                      status = "success",
+                      solidHeader = TRUE,
+                      checkboxGroupInput("edge_type_input", "Influence Type:",
+                                         choices = influence_types,
+                                         selected = influence_types)
+                    )
+                ),
+                
+                div(class = "custom-box-green",
+                    box(
+                      width = 9,
+                      title = "Sailor Shift Influence Network",
+                      solidHeader = TRUE,
+                      plotOutput("ggraphSailorNetwork", height = "800px")
+                    )
+                    
+              ))
       )
       ,
       
@@ -935,6 +933,66 @@ server <- function(input, output, session) {
   
   
   # ================= Influence Network Page =======================
+  output$ggraphSailorNetwork <- renderPlot({
+    req(input$edge_type_input)
+    
+    sailor_id <- nodes_tbl %>%
+      filter(str_detect(name, fixed("Sailor Shift", ignore_case = TRUE))) %>%
+      pull(id)
+    
+    sailor_in_edges <- edges_tbl %>%
+      filter(edge_type %in% input$influence_types_selected,
+             target == sailor_id)
+    
+    all_ids <- unique(c(sailor_in_edges$source, sailor_in_edges$target))
+    
+    vis_nodes <- nodes_tbl %>%
+      filter(id %in% all_ids,
+             node_type %in% c("Person", "MusicalGroup", "RecordLabel")) %>%
+      mutate(
+        label = name,
+        group = ifelse(id == sailor_id, "Sailor Shift", node_type)
+      ) %>%
+      select(id, label, group)
+    
+    vis_nodes <- vis_nodes %>%
+      mutate(row_id = row_number())
+    id_map <- vis_nodes %>% select(id, row_id)
+    
+    vis_edges <- sailor_in_edges %>%
+      left_join(id_map, by = c("source" = "id")) %>%
+      rename(from = row_id) %>%
+      left_join(id_map, by = c("target" = "id")) %>%
+      rename(to = row_id) %>%
+      select(from, to, label = edge_type)
+    
+    if (nrow(vis_nodes) == 0 || nrow(vis_edges) == 0) {
+      plot.new()
+      text(0.5, 0.5, "No data available for selected filters.", col = "red", cex = 1.5)
+      return()
+    }
+    
+    graph_tidy <- tbl_graph(
+      nodes = vis_nodes %>% arrange(row_id) %>% select(label, group),
+      edges = vis_edges,
+      directed = TRUE
+    )
+    
+    ggraph(graph_tidy, layout = "fr") +
+      geom_edge_link(aes(label = label),
+                     arrow = arrow(length = unit(3, 'mm')),
+                     end_cap = circle(3, 'mm'),
+                     label_size = 4,
+                     label_colour = "gray40",
+                     angle_calc = "along",
+                     label_dodge = unit(2.5, 'mm'),
+                     show.legend = FALSE) +
+      geom_node_point(aes(color = group), size = 14) +
+      geom_node_text(aes(label = label), repel = TRUE, size = 6) +
+      theme_void() +
+      theme(legend.position = "right")
+  })
+  
   output$dynamicSailorNetwork <- renderVisNetwork({
     req(input$influence_types_selected)
     
@@ -987,64 +1045,8 @@ server <- function(input, output, session) {
       visPhysics(stabilization = TRUE)
   })
   
-  # ==== Preprocessing: Who Influenced Sailor ====
-  filtered_influencers <- reactive({
-    # Contribution edge types
-    contribution_types <- c("PerformerOf", "ComposerOf", "LyricistOf", "ProducerOf", "RecordedBy")
-    
-    # Step 1: Filter edges to Sailor
-    sailor_in_edges <- edges_tbl %>%
-      filter(edge_type %in% input$edge_type_input, target == sailor_id)
-    
-    # Step 2: Influencer details
-    sailor_influencers <- sailor_in_edges %>%
-      left_join(nodes_tbl, by = c("source" = "id")) %>%
-      filter(node_type %in% input$influencer_type_input) %>%
-      select(influencer_id = source, influencer_name = name, influencer_type = node_type, edge_type)
-    
-    # Step 3: Contributions with release year
-    influencer_songs <- edges_tbl %>%
-      filter(edge_type %in% contribution_types) %>%
-      semi_join(sailor_influencers, by = c("source" = "influencer_id")) %>%
-      left_join(nodes_tbl, by = c("target" = "id")) %>%
-      filter(node_type %in% c("Song", "Album"), !is.na(release_date)) %>%
-      mutate(release_date = as.integer(release_date)) %>%
-      select(influencer_id = source, release_date)
-    
-    # Step 4: Merge earliest release
-    influencer_earliest <- influencer_songs %>%
-      group_by(influencer_id) %>%
-      summarise(earliest_release = min(release_date), .groups = "drop")
-    
-    # Final join
-    sailor_influencers %>%
-      left_join(influencer_earliest, by = "influencer_id") %>%
-      filter(!is.na(earliest_release))
-  })
   
   
-  
-  output$influencerTimelinePlot <- renderPlotly({
-    data <- filtered_influencers()
-    req(nrow(data) > 0)
-    
-    p <- ggplot(data, aes(x = earliest_release,
-                          y = fct_reorder(influencer_name, earliest_release),
-                          color = influencer_type,
-                          text = paste("Name:", influencer_name, "<br>Year:", earliest_release))) +
-      geom_segment(aes(xend = earliest_release, yend = influencer_name),
-                   x = min(data$earliest_release) - 1, color = "gray70") +
-      geom_point(size = 4) +
-      scale_color_brewer(palette = "Dark2") +
-      labs(title = "Who Has Influenced Sailor Over Time?",
-           subtitle = "Sorted by earliest known song/album contribution",
-           x = "Earliest Release Year", y = "Influencer") +
-      theme_minimal(base_size = 13) +
-      theme(plot.title = element_text(face = "bold", size = 16),
-            legend.position = "right")
-    
-    ggplotly(p, tooltip = "text")
-  })
   
   
   # ================= End of Influence Network Page =======================
