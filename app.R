@@ -329,24 +329,22 @@ ui <- dashboardPage(
       
       tabItem(tabName = "sailor_influencers",
               fluidRow(
-                div(class = "custom-box-green" ,
-                box(
-                  title = "Filter Influences",
-                  width = 3,
-                  status = "success",
-                  solidHeader = TRUE,
-                  checkboxGroupInput("influencer_type_input", "Influencer Type:",
-                                     choices = c("Person", "MusicalGroup", "RecordLabel"),
-                                     selected = c("Person", "MusicalGroup", "RecordLabel")),
-                  
-                  checkboxGroupInput("edge_type_input", "Influence Type:",
-                                     choices = influence_types,
-                                     selected = influence_types)
-                )),
+                div(class = "custom-box-green",
+                    box(
+                      title = "Filter Influence Types",
+                      width = 3,
+                      status = "success",
+                      solidHeader = TRUE,
+                      checkboxGroupInput("edge_type_input", "Influence Type:",
+                                         choices = influence_types,
+                                         selected = influence_types)
+                    )
+                ),
+                
                 div(class = "custom-box-green",
                     box(
                       width = 9,
-                      title = "Sailor Shift Influence Network (GGRAPH)",
+                      title = "Sailor Shift Influence Network",
                       solidHeader = TRUE,
                       plotOutput("ggraphSailorNetwork", height = "800px")
                     )
@@ -916,120 +914,67 @@ server <- function(input, output, session) {
   
   
   # ================= Influence Network Page =======================
-  output$dynamicSailorNetwork <- renderVisNetwork({
-    req(input$influence_types_selected)
-    
-    sailor_id <- nodes_tbl %>% 
-      filter(str_detect(name, fixed("Sailor Shift", ignore_case = TRUE))) %>%
-      pull(id)
-    
-    selected_types <- input$influence_types_selected  # ✅ FIXED ID
-    
-    sailor_edges <- edges_tbl %>%
-      filter(edge_type %in% selected_types,
-             source == sailor_id | target == sailor_id)
-    
-    first_hop_ids <- unique(c(sailor_edges$source, sailor_edges$target))
-    
-    if (input$hop_level == "2-hop") {  # ✅ Compare to string value
-      second_hop_edges <- edges_tbl %>%
-        filter(edge_type %in% selected_types,
-               source %in% first_hop_ids | target %in% first_hop_ids)
-      
-      all_edges <- bind_rows(sailor_edges, second_hop_edges) %>% distinct()
-    } else {
-      all_edges <- sailor_edges
-    }
-    
-    all_ids <- unique(c(all_edges$source, all_edges$target))
-    
-    vis_nodes <- nodes_tbl %>%
-      filter(id %in% all_ids, node_type %in% c("Person", "MusicalGroup")) %>%
-      mutate(
-        label = name,
-        group = ifelse(id == sailor_id, "Sailor Shift", node_type),
-        color = ifelse(id == sailor_id, "darkblue", "lightblue")
-      ) %>%
-      select(id, label, group, color)
-    
-    valid_ids <- vis_nodes$id
-    vis_edges <- all_edges %>%
-      filter(source %in% valid_ids, target %in% valid_ids) %>%
-      select(from = source, to = target, label = edge_type)
-    
-    connected_ids <- unique(c(vis_edges$from, vis_edges$to))
-    vis_nodes <- vis_nodes %>% filter(id %in% connected_ids)
-    
-    visNetwork(vis_nodes, vis_edges, height = "800px", width = "100%") %>%
-      visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
-      visEdges(arrows = "to", font = list(size = 10)) %>%
-      visNodes(font = list(size = 10), size = 25) %>%
-      visLayout(randomSeed = 123) %>%
-      visPhysics(stabilization = TRUE)
-  })
-  
-  # ==== Preprocessing: Who Influenced Sailor ====
   output$ggraphSailorNetwork <- renderPlot({
-    req(input$influence_types_selected)
-    
-    selected_types <- input$influence_types_selected
+    req(input$edge_type_input)
     
     sailor_id <- nodes_tbl %>%
       filter(str_detect(name, fixed("Sailor Shift", ignore_case = TRUE))) %>%
       pull(id)
     
-    sailor_edges <- edges_tbl %>%
-      filter(edge_type %in% selected_types,
-             source == sailor_id | target == sailor_id)
+    sailor_in_edges <- edges_tbl %>%
+      filter(edge_type %in% input$influence_types_selected,
+             target == sailor_id)
     
-    first_hop_ids <- unique(c(sailor_edges$source, sailor_edges$target))
-    
-    if (input$hop_level == "2-hop") {
-      second_hop_edges <- edges_tbl %>%
-        filter(edge_type %in% selected_types,
-               source %in% first_hop_ids | target %in% first_hop_ids)
-      all_edges <- bind_rows(sailor_edges, second_hop_edges) %>% distinct()
-    } else {
-      all_edges <- sailor_edges
-    }
-    
-    all_ids <- unique(c(all_edges$source, all_edges$target))
+    all_ids <- unique(c(sailor_in_edges$source, sailor_in_edges$target))
     
     vis_nodes <- nodes_tbl %>%
-      filter(id %in% all_ids, node_type %in% c("Person", "MusicalGroup")) %>%
+      filter(id %in% all_ids,
+             node_type %in% c("Person", "MusicalGroup", "RecordLabel")) %>%
       mutate(
         label = name,
         group = ifelse(id == sailor_id, "Sailor Shift", node_type)
       ) %>%
       select(id, label, group)
     
-    vis_edges <- all_edges %>%
-      filter(source %in% vis_nodes$id, target %in% vis_nodes$id) %>%
-      select(from = source, to = target, label = edge_type)
+    vis_nodes <- vis_nodes %>%
+      mutate(row_id = row_number())
+    id_map <- vis_nodes %>% select(id, row_id)
     
-    # Validation check to avoid graph errors
+    vis_edges <- sailor_in_edges %>%
+      left_join(id_map, by = c("source" = "id")) %>%
+      rename(from = row_id) %>%
+      left_join(id_map, by = c("target" = "id")) %>%
+      rename(to = row_id) %>%
+      select(from, to, label = edge_type)
+    
     if (nrow(vis_nodes) == 0 || nrow(vis_edges) == 0) {
       plot.new()
       text(0.5, 0.5, "No data available for selected filters.", col = "red", cex = 1.5)
       return()
     }
     
-    graph_tidy <- tbl_graph(nodes = vis_nodes, edges = vis_edges, directed = TRUE)
+    graph_tidy <- tbl_graph(
+      nodes = vis_nodes %>% arrange(row_id) %>% select(label, group),
+      edges = vis_edges,
+      directed = TRUE
+    )
     
     ggraph(graph_tidy, layout = "fr") +
       geom_edge_link(aes(label = label),
                      arrow = arrow(length = unit(3, 'mm')),
                      end_cap = circle(3, 'mm'),
-                     label_size = 3,
+                     label_size = 4,
                      label_colour = "gray40",
                      angle_calc = "along",
                      label_dodge = unit(2.5, 'mm'),
                      show.legend = FALSE) +
-      geom_node_point(aes(color = group), size = 8) +
-      geom_node_text(aes(label = label), repel = TRUE, size = 3) +
+      geom_node_point(aes(color = group), size = 14) +
+      geom_node_text(aes(label = label), repel = TRUE, size = 6) +
       theme_void() +
-      theme(legend.position = "none")
+      theme(legend.position = "right")
   })
+  
+  
   
   
   
