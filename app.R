@@ -356,9 +356,28 @@ ui <- dashboardPage(
       ,
       
       tabItem(tabName = "cluster",
-              plotOutput("elbowPlot"),
-              plotlyOutput("pcaPlot"),
-              DT::dataTableOutput("clusterSummary")
+              fluidRow(
+                box(title = "Clustering Panel", width = 3, status = "info",
+                    selectInput("cluster_vars", "Select Variables for Clustering:",
+                                choices = c("total_works", "notable_works", "oceanus_folk_works", 
+                                            "collaborations", "time_to_notability", "genre_diversity"),
+                                selected = c("total_works", "notable_works", "oceanus_folk_works"),
+                                multiple = TRUE),
+                    radioButtons("cluster_method", "Clustering Method:",
+                                 choices = c("K-means", "Hierarchical", "PAM"),
+                                 selected = "K-means"),
+                    sliderInput("n_clusters", "Number of Clusters:", 2, 8, value = 3),
+                    actionButton("run_cluster", "Run Cluster Analysis")
+                ),
+                box(title = "Cluster Analysis Results", width = 9, status = "success",
+                    tabsetPanel(
+                      tabPanel("Optimal Clusters", plotOutput("elbowPlot")),
+                      tabPanel("Cluster Plot", plotOutput("clusterPlot")),
+                      tabPanel("Cluster Characteristics", plotOutput("clusterChars")),
+                      tabPanel("Cluster Members", DT::dataTableOutput("clusterMembers"))
+                    )
+                )
+              )
       ),
       
       tabItem(tabName = "future",
@@ -1030,7 +1049,97 @@ server <- function(input, output, session) {
   
   # ================= End of Influence Network Page =======================
   
+  # ================= Cluster Analysis Page =======================
   
+  # Cluster Analysis
+  cluster_data <- reactive({
+    req(input$cluster_vars)
+    artists_profile %>%
+      select(all_of(input$cluster_vars)) %>%
+      scale() %>%  # Standardize the variables
+      na.omit()
+  })
+  
+  # Elbow plot for optimal clusters
+  output$elbowPlot <- renderPlot({
+    req(cluster_data())
+    fviz_nbclust(cluster_data(), kmeans, method = "wss") +
+      labs(title = "Elbow Method for Optimal Number of Clusters") +
+      theme_minimal()
+  })
+  
+  # Cluster results
+  cluster_results <- eventReactive(input$run_cluster, {
+    req(cluster_data(), input$n_clusters)
+    
+    if(input$cluster_method == "K-means") {
+      set.seed(123)
+      kmeans(cluster_data(), centers = input$n_clusters, nstart = 25)
+    } else if(input$cluster_method == "Hierarchical") {
+      hclust(dist(cluster_data()), method = "ward.D2")
+    } else {
+      pam(cluster_data(), k = input$n_clusters)
+    }
+  })
+  
+  # Cluster plot
+  output$clusterPlot <- renderPlot({
+    req(cluster_results())
+    
+    if(input$cluster_method == "Hierarchical") {
+      plot(cluster_results(), main = "Hierarchical Clustering Dendrogram")
+      rect.hclust(cluster_results(), k = input$n_clusters, border = 2:5)
+    } else {
+      fviz_cluster(cluster_results(), data = cluster_data(),
+                   geom = "point", stand = FALSE,
+                   ellipse.type = "norm") +
+        theme_minimal() +
+        labs(title = paste(input$cluster_method, "Cluster Plot"))
+    }
+  })
+  
+  # Cluster characteristics
+  output$clusterChars <- renderPlot({
+    req(cluster_results())
+    
+    if(input$cluster_method == "Hierarchical") {
+      clusters <- cutree(cluster_results(), k = input$n_clusters)
+    } else {
+      clusters <- cluster_results()$cluster
+    }
+    
+    cluster_data() %>%
+      as.data.frame() %>%
+      mutate(Cluster = as.factor(clusters)) %>%
+      pivot_longer(-Cluster, names_to = "Variable", values_to = "Value") %>%
+      ggplot(aes(x = Variable, y = Value, fill = Cluster)) +
+      geom_boxplot() +
+      facet_wrap(~ Cluster, ncol = 2) +
+      labs(title = "Cluster Characteristics by Variable",
+           x = "", y = "Standardized Value") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  })
+  
+  # Cluster members table
+  output$clusterMembers <- DT::renderDataTable({
+    req(cluster_results())
+    
+    if(input$cluster_method == "Hierarchical") {
+      clusters <- cutree(cluster_results(), k = input$n_clusters)
+    } else {
+      clusters <- cluster_results()$cluster
+    }
+    
+    artists_profile %>%
+      filter(row_number() %in% as.numeric(names(clusters))) %>%
+      mutate(Cluster = clusters) %>%
+      select(name, Cluster, total_works, notable_works, oceanus_folk_works, 
+             collaborations, time_to_notability, genre_diversity)
+  })
+  
+  
+  # ================= End of Cluster Analysis Page =======================
   
   
 }
