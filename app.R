@@ -17,6 +17,8 @@ library(fmsb)
 library(forcats)
 library(shinydashboard)
 library(shinythemes)
+library(cluster)
+library(NbClust)
 
 # ===== Data Preprocessing =====
 data_path <- "data/MC1_graph.json"
@@ -134,6 +136,14 @@ artists_profile <- artists_profile %>%
   ) %>%
   inner_join(people_tbl, by = "person_id") %>%
   relocate(person_id, name)
+
+# Precompute the necessary variables for clustering outside of the cluster analysis function.
+
+cluster_data <- artists_profile %>%
+  select(total_works, notable_works, oceanus_folk_works, collaborations, time_to_notability, genre_diversity) %>%
+  na.omit() %>%
+  scale()  # Standardize the variables
+
 
 ### ---- Get Sailor Shift ID ----
 sailor_id <- nodes_tbl %>% 
@@ -1053,46 +1063,41 @@ server <- function(input, output, session) {
   
   # ================= Cluster Analysis Page =======================
   
-  # Cluster Analysis
-  cluster_data <- reactive({
-    req(input$cluster_vars)
-    artists_profile %>%
-      select(all_of(input$cluster_vars)) %>%
-      scale() %>%  # Standardize the variables
-      na.omit()
+  # Cluster results
+  cluster_results <- eventReactive(input$run_cluster, {
+    req(cluster_data, input$n_clusters)
+    
+    if(input$cluster_method == "K-means") {
+      set.seed(123)
+      return(kmeans(cluster_data, centers = input$n_clusters, nstart = 25))
+    } else if(input$cluster_method == "Hierarchical") {
+      return(hclust(dist(cluster_data), method = "ward.D2"))
+    } else {
+      return(pam(cluster_data, k = input$n_clusters))
+    }
   })
   
   # Elbow plot for optimal clusters
   output$elbowPlot <- renderPlot({
-    req(cluster_data())
-    fviz_nbclust(cluster_data(), kmeans, method = "wss") +
+    req(cluster_data)
+    
+    # Using fviz_nbclust (for elbow method) directly with ggplot
+    fviz_nbclust(cluster_data, kmeans, method = "wss") +
       labs(title = "Elbow Method for Optimal Number of Clusters") +
       theme_minimal()
-  })
-  
-  # Cluster results
-  cluster_results <- eventReactive(input$run_cluster, {
-    req(cluster_data(), input$n_clusters)
-    
-    if(input$cluster_method == "K-means") {
-      set.seed(123)
-      kmeans(cluster_data(), centers = input$n_clusters, nstart = 25)
-    } else if(input$cluster_method == "Hierarchical") {
-      hclust(dist(cluster_data()), method = "ward.D2")
-    } else {
-      pam(cluster_data(), k = input$n_clusters)
-    }
   })
   
   # Cluster plot
   output$clusterPlot <- renderPlot({
     req(cluster_results())
     
+    # Use ggplot directly if possible for simplicity
     if(input$cluster_method == "Hierarchical") {
       plot(cluster_results(), main = "Hierarchical Clustering Dendrogram")
       rect.hclust(cluster_results(), k = input$n_clusters, border = 2:5)
     } else {
-      fviz_cluster(cluster_results(), data = cluster_data(),
+      # Plot cluster results directly
+      fviz_cluster(cluster_results(), data = cluster_data,
                    geom = "point", stand = FALSE,
                    ellipse.type = "norm") +
         theme_minimal() +
@@ -1110,7 +1115,7 @@ server <- function(input, output, session) {
       clusters <- cluster_results()$cluster
     }
     
-    cluster_data() %>%
+    p <- cluster_data %>%
       as.data.frame() %>%
       mutate(Cluster = as.factor(clusters)) %>%
       pivot_longer(-Cluster, names_to = "Variable", values_to = "Value") %>%
@@ -1121,6 +1126,8 @@ server <- function(input, output, session) {
            x = "", y = "Standardized Value") +
       theme_minimal() +
       theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    ggplotly(p) # Ensure ggplotly is used to render the plot
   })
   
   # Cluster members table
@@ -1139,7 +1146,6 @@ server <- function(input, output, session) {
       select(name, Cluster, total_works, notable_works, oceanus_folk_works, 
              collaborations, time_to_notability, genre_diversity)
   })
-  
   
   # ================= End of Cluster Analysis Page =======================
   
