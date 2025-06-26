@@ -344,7 +344,7 @@ ui <- dashboardPage(
                 div(class = "custom-box-green",
                     box(
                       width = 9,
-                      title = "Sailor Shift Influence Network",
+                      title = "Sailor Influencers",
                       solidHeader = TRUE,
                       plotOutput("ggraphSailorNetwork", height = "800px")
                     )
@@ -972,6 +972,58 @@ server <- function(input, output, session) {
       geom_node_text(aes(label = label), repel = TRUE, size = 6) +
       theme_void() +
       theme(legend.position = "right")
+  })
+  
+  output$dynamicSailorNetwork <- renderVisNetwork({
+    req(input$influence_types_selected)
+    
+    sailor_id <- nodes_tbl %>% 
+      filter(str_detect(name, fixed("Sailor Shift", ignore_case = TRUE))) %>%
+      pull(id)
+    
+    selected_types <- input$influence_types_selected  # ✅ FIXED ID
+    
+    sailor_edges <- edges_tbl %>%
+      filter(edge_type %in% selected_types,
+             source == sailor_id | target == sailor_id)
+    
+    first_hop_ids <- unique(c(sailor_edges$source, sailor_edges$target))
+    
+    if (input$hop_level == "2-hop") {  # ✅ Compare to string value
+      second_hop_edges <- edges_tbl %>%
+        filter(edge_type %in% selected_types,
+               source %in% first_hop_ids | target %in% first_hop_ids)
+      
+      all_edges <- bind_rows(sailor_edges, second_hop_edges) %>% distinct()
+    } else {
+      all_edges <- sailor_edges
+    }
+    
+    all_ids <- unique(c(all_edges$source, all_edges$target))
+    
+    vis_nodes <- nodes_tbl %>%
+      filter(id %in% all_ids, node_type %in% c("Person", "MusicalGroup")) %>%
+      mutate(
+        label = name,
+        group = ifelse(id == sailor_id, "Sailor Shift", node_type),
+        color = ifelse(id == sailor_id, "darkblue", "lightblue")
+      ) %>%
+      select(id, label, group, color)
+    
+    valid_ids <- vis_nodes$id
+    vis_edges <- all_edges %>%
+      filter(source %in% valid_ids, target %in% valid_ids) %>%
+      select(from = source, to = target, label = edge_type)
+    
+    connected_ids <- unique(c(vis_edges$from, vis_edges$to))
+    vis_nodes <- vis_nodes %>% filter(id %in% connected_ids)
+    
+    visNetwork(vis_nodes, vis_edges, height = "800px", width = "100%") %>%
+      visOptions(highlightNearest = TRUE, nodesIdSelection = TRUE) %>%
+      visEdges(arrows = "to", font = list(size = 10)) %>%
+      visNodes(font = list(size = 10), size = 25) %>%
+      visLayout(randomSeed = 123) %>%
+      visPhysics(stabilization = TRUE)
   })
   
   
