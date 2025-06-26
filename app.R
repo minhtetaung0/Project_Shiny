@@ -17,6 +17,9 @@ library(fmsb)
 library(forcats)
 library(shinydashboard)
 library(shinythemes)
+library(treemapify)
+library(viridis)  
+
 
 # ===== Data Preprocessing =====
 data_path <- "data/MC1_graph.json"
@@ -176,7 +179,8 @@ ui <- dashboardPage(
       menuItem("Artists Profiles", tabName = "artists", icon = icon("users")),
       menuItem("Influence Network", icon = icon("project-diagram"), startExpanded = FALSE,
         menuSubItem("Who has Sailor influenced?", tabName = "network"),
-        menuSubItem("Who has influenced Sailor?", tabName = "sailor_influencers")),
+        menuSubItem("Who has influenced Sailor?", tabName = "sailor_influencers"),
+        menuSubItem("Oceanus Folk Influence", tabName = "genreTree")),
       menuItem("Cluster Analysis", tabName = "cluster", icon = icon("layer-group")),
       menuItem("Future Predictions", tabName = "future", icon = icon("chart-line"))
     )
@@ -350,6 +354,16 @@ ui <- dashboardPage(
                     )
                     
               ))
+      )
+      ,
+      tabItem(tabName = "genreTree",
+              fluidRow(
+                box(
+                  title = "Genre Treemap", width = 12, status = "primary", solidHeader = TRUE,
+                  plotlyOutput("genre_treemap_plotly", height = "750px")
+                  
+                )
+              )
       )
       ,
       
@@ -914,6 +928,9 @@ server <- function(input, output, session) {
   
   
   # ================= Influence Network Page =======================
+  
+    ## ================= Who did Sailor influence  =======================
+  
   output$ggraphSailorNetwork <- renderPlot({
     req(input$edge_type_input)
     
@@ -974,6 +991,10 @@ server <- function(input, output, session) {
       theme(legend.position = "right")
   })
   
+    ## ==============End of Who did Sailor influence  ======================
+  
+    ## ================= Who influenced Sailor ======================
+  
   output$dynamicSailorNetwork <- renderVisNetwork({
     req(input$influence_types_selected)
     
@@ -1026,9 +1047,36 @@ server <- function(input, output, session) {
       visPhysics(stabilization = TRUE)
   })
   
+    ## ================= End of Who influenced Sailor ======================
   
+    ## ================= Oceanus Folk Influence ======================
   
+  output$genre_treemap_plotly <- renderPlotly({
+    
+    genre_counts <- nodes_tbl %>%
+      filter(node_type == "Song", !is.na(genre)) %>%
+      count(genre, sort = TRUE)
+    
+    plot_ly(
+      data = genre_counts,
+      type = "treemap",
+      labels = ~genre,
+      values = ~n,
+      parents = rep(NA, nrow(genre_counts)),
+      textinfo = "label+value+percent entry",
+      hoverinfo = "label+value+percent entry",
+      marker = list(colors = ~n, colorscale = "Viridis"),
+      domain = list(column = 0)
+    ) %>%
+      layout(
+        margin = list(t = 50, l = 0, r = 0, b = 0),
+        uniformtext = list(minsize = 12, mode = "hide"),
+        title = list(text = "🎵 Treemap of Song Genres", x = 0.05)
+      )
+  })
   
+
+    ## ================= End of Oceanus Folk Influence ======================
   
   # ================= End of Influence Network Page =======================
   
