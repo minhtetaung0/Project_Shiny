@@ -117,10 +117,21 @@ collaborations <- edges_tbl_mapped %>%
   count(id, name = "collaborations") %>%
   rename(person_id = id)
 
+# --- Compute Genre Diversity ---
+genre_diversity_tbl <- artist_works %>%
+  filter(!is.na(genre)) %>%
+  group_by(person_id) %>%
+  summarise(genre_diversity = n_distinct(genre), .groups = "drop")
+
+
 # --- Final Profile Merge ---
 artists_profile <- artists_profile %>%
   left_join(collaborations, by = "person_id") %>%
-  mutate(collaborations = replace_na(collaborations, 0)) %>%
+  left_join(genre_diversity_tbl, by = "person_id") %>%
+  mutate(
+    collaborations = replace_na(collaborations, 0),
+    genre_diversity = replace_na(genre_diversity, 0)
+  ) %>%
   inner_join(people_tbl, by = "person_id") %>%
   relocate(person_id, name)
 
@@ -167,7 +178,6 @@ ui <- dashboardPage(
         menuSubItem("Who has Sailor influenced?", tabName = "network"),
         menuSubItem("Who has influenced Sailor?", tabName = "sailor_influencers")),
       menuItem("Cluster Analysis", tabName = "cluster", icon = icon("layer-group")),
-      menuItem("Artist Comparison", tabName = "compare", icon = icon("user-friends")),
       menuItem("Future Predictions", tabName = "future", icon = icon("chart-line"))
     )
   ),
@@ -256,26 +266,38 @@ ui <- dashboardPage(
                   sliderInput("artist_year_range", "Select Year Range:",
                               min = min(artist_works$release_date, na.rm = TRUE),
                               max = max(artist_works$release_date, na.rm = TRUE),
-                              value = c(1990, 2005),
+                              value = c(1975, 2040),
                               step = 5, sep = ""),
-                  selectizeInput("selected_artists", "Select Artist(s):",
+                  selectizeInput("selected_artists", "Select Artist(s) up to 3:",
                                  choices = sort(unique(artists_profile$name)),
-                                 selected = NULL, multiple = TRUE,
-                                 options = list(maxItems = 3))
+                                 selected = c("Sailor Shift"), 
+                                 multiple = TRUE,
+                                 options = list(maxItems = 3)),
+                  radioButtons("ego_hop", "Ego Network Hop Level:",
+                               choices = c("1-hop", "2-hop"),
+                               selected = "1-hop"),
+                  selectInput("ranking_metric", "Rank Artists By:",
+                              choices = c("Total Works", "Notable Works", "Oceanus Folk Involvement")),
+                  numericInput("top_n_artists", "Top N Artists to Display:", value = 10, min = 1),
+                  uiOutput("toggle_benchmark_ui"),
+                  br(),
+                  uiOutput("toggle_artist_table_ui"),
                 ),
                 box(
-                  title = "Career Timeline & Ego Network", width = 9, status = "success", solidHeader = TRUE,
+                  title = "Artist Development & Relationships", width = 9, status = "success", solidHeader = TRUE,
                   tabsetPanel(
                     tabPanel("Career Timeline", plotlyOutput("careerTimelinePlot", height = "500px")),
-                    tabPanel("Ego Network", visNetworkOutput("egoArtistNetwork", height = "500px"))
+                    tabPanel("Artist Work Count", plotlyOutput("artistsWorkcountTimeline", height = "500px")),
+                    tabPanel("Ego Network", visNetworkOutput("egoArtistNetwork", height = "500px")),
+                    tabPanel("Radar Comparison", plotOutput("radarComparisonPlot", height = "500px"))
                   )
                 )
               ),
               fluidRow(
-                box(
-                  title = "Artist Work & Collaboration Table", width = 12, status = "info", solidHeader = TRUE,
-                  DT::dataTableOutput("artistWorksTable")
-                )
+                uiOutput("benchmark_table_box")
+              ),
+              fluidRow(
+                uiOutput("artist_table_box")
               )
       ),
       
@@ -337,12 +359,6 @@ ui <- dashboardPage(
               plotOutput("elbowPlot"),
               plotlyOutput("pcaPlot"),
               DT::dataTableOutput("clusterSummary")
-      ),
-      
-      tabItem(tabName = "compare",
-              DT::dataTableOutput("artistComparisonTable"),
-              plotOutput("timelinePlot"),
-              visNetworkOutput("egoNetwork", height = "600px")
       ),
       
       tabItem(tabName = "future",
@@ -516,7 +532,10 @@ server <- function(input, output, session) {
   })
   
   output$overview_artists_table <- DT::renderDataTable({
-    artists_profile
+    datatable(
+      artists_profile,
+      options = list(scrollX = TRUE, pageLength = 10)
+    )
   })
   
   # === End of Plots Boxes ===
@@ -601,9 +620,297 @@ server <- function(input, output, session) {
   
   # ================= Artists Profile Page =======================
   
-  output$artists_table <- DT::renderDataTable({
-    artists_profile
+  # === Artists Career Timeline Plot ===
+  output$careerTimelinePlot <- renderPlotly({
+    req(input$selected_artists)
+    
+    # Step 1: Prepare top 6 genres in selected subset
+    top_genres <- artist_works %>%
+      left_join(people_tbl, by = "person_id") %>%
+      filter(name %in% input$selected_artists) %>%
+      count(genre, sort = TRUE) %>%
+      slice_head(n = 6) %>%
+      pull(genre)
+    
+    levels_genre_rev <- sort(top_genres, decreasing = TRUE)
+    
+    # Step 2: Prepare filtered data
+    artist_subset <- artist_works %>%
+      left_join(people_tbl, by = "person_id") %>%
+      filter(name %in% input$selected_artists,
+             release_date >= input$artist_year_range[1],
+             release_date <= input$artist_year_range[2],
+             genre %in% top_genres) %>%
+      mutate(
+        genre = factor(genre, levels = levels_genre_rev),
+        notable = as.logical(notable),
+        label = paste0("Artist: ", name,
+                       "<br>Year: ", release_date,
+                       "<br>Genre: ", genre,
+                       ifelse(notable, "<br><b>Notable</b>", ""))
+      )
+    
+    # Step 3: Plot
+    p <- ggplot(
+      artist_subset,
+      aes(x = release_date, y = name, shape = genre, color = notable, text = label)
+    ) +
+      geom_jitter(width = 0.3, height = 0.3, size = 3, alpha = 0.7) +
+      scale_color_manual(values = c(`TRUE` = "#a1d99b", `FALSE` = "#fcbba1")) +
+      labs(
+        title  = "Career Timelines (Top Genres Sorted Z–A)",
+        x = "Release Year",
+        y = "Artist",
+        shape = "Genre",
+        color = "Notable"
+      ) +
+      theme_minimal() +
+      theme(plot.title = element_text(hjust = 0.5))
+    
+    ggplotly(p, tooltip = "text")
   })
+  
+  # === Artists Work Count Timeline Table ===
+  output$artistsWorkcountTimeline <- renderPlotly({
+    req(input$selected_artists)
+    
+    # Prepare data: count works by artist and release year
+    count_data <- artist_works %>%
+      left_join(people_tbl, by = "person_id") %>%
+      filter(name %in% input$selected_artists,
+             release_date >= input$artist_year_range[1],
+             release_date <= input$artist_year_range[2]) %>%
+      group_by(name, release_date) %>%
+      summarise(work_count = n(), .groups = "drop")
+    
+    # Plot line chart of works per year
+    p <- ggplot(count_data, aes(x = release_date, y = work_count, color = name)) +
+      geom_line(size = 1.2) +
+      geom_point(size = 2) +
+      labs(
+        title = "Number of Works per Year",
+        x = "Release Year",
+        y = "Count",
+        color = "Artist"
+      ) +
+      theme_minimal() +
+      theme(plot.title = element_text(hjust = 0.5))
+    
+    ggplotly(p)
+  })
+  
+  # === Ego Network for Artists === 
+  output$egoArtistNetwork <- renderVisNetwork({
+    req(input$selected_artists)
+    
+    # Step 1: Get artist nodes
+    ego_artist_nodes <- nodes_tbl %>%
+      filter(node_type == "Person", name %in% input$selected_artists) %>%
+      left_join(id_map, by = c("id" = "id")) %>%
+      select(artist_name = name, artist_id = id, index)
+    
+    ego_ids <- ego_artist_nodes$artist_id
+    req(length(ego_ids) > 0)
+    
+    # Step 2: Subset the graph manually using edges
+    all_edges <- as_tibble(edges_tbl_mapped)
+    if (input$ego_hop == "2-hop") {
+      # First hop
+      first_hop <- all_edges %>% filter(source %in% ego_ids | target %in% ego_ids)
+      first_hop_ids <- unique(c(first_hop$source, first_hop$target))
+      
+      # Second hop
+      second_hop <- all_edges %>% filter(source %in% first_hop_ids | target %in% first_hop_ids)
+      second_hop_ids <- unique(c(second_hop$source, second_hop$target))
+      
+      final_ids <- unique(c(ego_ids, first_hop_ids, second_hop_ids))
+      final_edges <- all_edges %>% filter(source %in% final_ids & target %in% final_ids)
+    } else {
+      final_edges <- all_edges %>% filter(source %in% ego_ids | target %in% ego_ids)
+      final_ids <- unique(c(final_edges$source, final_edges$target, ego_ids))
+    }
+    
+    # Step 3: Filter nodes
+    nodes_data <- nodes_tbl %>%
+      filter(id %in% final_ids) %>%
+      mutate(
+        label = ifelse(!is.na(name), name, node_type),
+        group = node_type,
+        title = paste0("<b>", label, "</b><br>Type: ", node_type)
+      ) %>%
+      select(id, label, group, title)
+    
+    # Step 4: Prepare edges data
+    edges_data <- final_edges %>%
+      mutate(
+        from = source,
+        to = target,
+        title = paste("Edge Type:", edge_type),
+        label = edge_type
+      ) %>%
+      select(from, to, label, title)
+    
+    # Step 5: Render visNetwork
+    visNetwork(nodes_data, edges_data, height = "500px", width = "100%") %>%
+      visOptions(
+        highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
+        nodesIdSelection = TRUE
+      ) %>%
+      visInteraction(navigationButtons = TRUE) %>%
+      visLayout(randomSeed = 42) %>%
+      visLegend(
+        useGroups = TRUE,
+        position = "right",
+        main = "Node Type"
+      )
+  })
+  
+  # === Radar Plot ===
+  show_benchmark_table <- reactiveVal(FALSE)
+  
+  observeEvent(input$toggle_benchmark_btn, {
+    show_benchmark_table(!show_benchmark_table())
+  })
+  
+  output$radarComparisonPlot <- renderPlot({
+    req(input$selected_artists)
+    
+    selected <- input$selected_artists
+    radar_data <- artists_profile %>%
+      filter(name %in% selected) %>%
+      select(name, total_works, notable_works, oceanus_folk_works, collaborations, time_to_notability, genre_diversity) %>%
+      column_to_rownames("name") %>%
+      as.data.frame()
+    
+    radar_data$time_to_notability <- max(radar_data$time_to_notability, na.rm = TRUE) - radar_data$time_to_notability
+    
+    radar_data_scaled <- as.data.frame(lapply(radar_data, function(x) scales::rescale(x, to = c(0, 100))))
+    rownames(radar_data_scaled) <- rownames(radar_data)
+    
+    if (all(rowSums(radar_data_scaled, na.rm = TRUE) == 0)) {
+      plot.new()
+      title("Radar data unavailable for selected artist(s).")
+      return()
+    }
+    
+    par(mfrow = c(1, min(nrow(radar_data_scaled), 3)), mar = c(2, 2, 4, 2))
+    
+    for (i in 1:nrow(radar_data_scaled)) {
+      artist_name <- rownames(radar_data_scaled)[i]
+      artist_values <- radar_data_scaled[i, , drop = FALSE]
+      
+      if (all(is.na(artist_values)) || all(artist_values == 0)) next
+      
+      radar_individual <- rbind(rep(100, ncol(radar_data_scaled)), rep(0, ncol(radar_data_scaled)), artist_values)
+      
+      radarchart(radar_individual,
+                 axistype = 1,
+                 pcol = "darkorange",
+                 pfcol = rgb(1, 0.5, 0, 0.3),
+                 plwd = 2,
+                 cglcol = "gray",
+                 cglty = 1,
+                 cglwd = 0.8,
+                 axislabcol = "darkblue",
+                 caxislabels = paste0(seq(0, 100, 25), "%"),
+                 vlcex = 0.8,
+                 title = artist_name,
+                 calcex = 0.8,
+                 cex.main = 1.2)
+    }
+  })
+  
+  output$benchmark_table <- DT::renderDataTable({
+    req(input$selected_artists)
+    benchmark_data <- artists_profile %>%
+      filter(name %in% input$selected_artists) %>%
+      select(name, total_works, notable_works, oceanus_folk_works, collaborations, time_to_notability, genre_diversity)
+    
+    datatable(
+      benchmark_data,
+      options = list(scrollX = TRUE, pageLength = 5)
+    )
+  })
+  
+  output$benchmark_table_box <- renderUI({
+    if (show_benchmark_table()) {
+      box(
+        title = "Radar Benchmark Table",
+        width = 12,
+        status = "success",
+        solidHeader = TRUE,
+        DT::dataTableOutput("benchmark_table")
+      )
+    } else {
+      NULL
+    }
+  })
+  
+  output$toggle_benchmark_ui <- renderUI({
+    actionButton(
+      inputId = "toggle_benchmark_btn",
+      label = if (show_benchmark_table()) "Hide Benchmark Table" else "Show Benchmark Table",
+      class = if (show_benchmark_table()) "btn-danger btn-block" else "btn-success btn-block"
+    )
+  })
+  
+  
+  # === Artists Profile Data Table ===
+  # Reactive flag to show/hide the profile box
+  show_artist_table <- reactiveVal(FALSE)
+  
+  observeEvent(input$toggle_artist_table_btn, {
+    show_artist_table(!show_artist_table())
+  })
+  
+  # Reactive filter for top N based on metric
+  filtered_artists <- reactive({
+    metric <- input$ranking_metric
+    top_n <- input$top_n_artists
+    
+    if (metric == "Total Works") {
+      artists_profile %>% arrange(desc(total_works)) %>% head(top_n)
+    } else if (metric == "Notable Works") {
+      artists_profile %>% arrange(desc(notable_works)) %>% head(top_n)
+    } else if (metric == "Oceanus Folk Involvement") {
+      artists_profile %>% arrange(desc(oceanus_folk_works)) %>% head(top_n)
+    } else {
+      artists_profile %>% head(top_n)
+    }
+  })
+  
+  output$artist_table <- DT::renderDataTable({
+    datatable(
+      filtered_artists(),
+      options = list(scrollX = TRUE, pageLength = 10)
+    )
+  })
+  
+  # Render toggle button with dynamic label and style
+  output$toggle_artist_table_ui <- renderUI({
+    actionButton(
+      inputId = "toggle_artist_table_btn",
+      label = if (show_artist_table()) "Hide Artist Table" else "Show Artist Table",
+      class = if (show_artist_table()) "btn-danger btn-block" else "btn-info btn-block"
+    )
+  })
+  
+  # Conditionally show or hide the artist table box
+  output$artist_table_box <- renderUI({
+    if (show_artist_table()) {
+      box(
+        title = "Artist Work & Collaboration Table",
+        width = 12,
+        status = "info",
+        solidHeader = TRUE,
+        DT::dataTableOutput("artist_table")
+      )
+    } else {
+      NULL
+    }
+  })
+  
+  
   
   # ================= End of Artists Profile Page =======================
   
