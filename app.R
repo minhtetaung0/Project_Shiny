@@ -163,6 +163,13 @@ sailor_id <- nodes_tbl %>%
 influence_types <- c("LyricalReferenceTo", "CoverOf", "InterpolatesFrom", "DirectlySamples", "InStyleOf", 
                      "PerformerOf", "ComposerOf", "LyricistOf", "ProducerOf", "RecordedBy")
 
+# ==== Precompute Oceanus Folk Songs and Influence Edges ====
+of_songs <- nodes_tbl %>%
+  filter(node_type == "Song", genre == "Oceanus Folk")
+
+influence_edges <- edges_tbl %>%
+  filter(edge_type %in% influence_types)
+
 # ---- Extract 1-hop Influence Edges ----
 sailor_edges <- edges_tbl %>%
   filter(edge_type %in% influence_types, source == sailor_id | target == sailor_id)
@@ -411,13 +418,22 @@ ui <- dashboardPage(
                          )
                 ),
                 tabPanel("Genres Influenced Oceanus Folk",
-                         visNetworkOutput("genre_influence_net", height = "600px")
+                         sidebarLayout(
+                           sidebarPanel(width = 3,
+                                        sliderInput("min_influence", "Minimum Influence Count:",
+                                                    min = 1, max = 10, value = 1),
+                                        numericInput("top_n_genres", "Top N Genres to Display:", value = 10, min = 1, max = 20),
+                                        selectInput("target_genre_network", "Target Genre (Node):",
+                                                    choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
+                                                    selected = "Oceanus Folk")
+                           ),
+                           mainPanel(
+                             visNetworkOutput("genre_influence_net", height = "650px")
+                           )
+                         )
                 )
-                                        
-                                        
-                                                    
-              )
-      ),
+                
+              )),
       
       tabItem(tabName = "cluster",
               fluidRow(
@@ -1244,54 +1260,68 @@ server <- function(input, output, session) {
   ### ======== Genres Influenced Oceanus Folk ===============
 
   output$genre_influence_net <- renderVisNetwork({
-    # Step 1: Get Oceanus Folk song IDs
-    of_song_ids <- of_songs$id
+    req(input$min_influence, input$top_n_genres, input$target_genre_network)
     
-    # Step 2: Filter relevant edges
-    influences_into_of <- influence_edges %>%
-      filter(target %in% of_song_ids)
+    # Step 1: Get song IDs of selected target genre
+    target_songs <- nodes_tbl %>%
+      filter(node_type == "Song", genre == input$target_genre_network)
+    target_song_ids <- target_songs$id
     
-    # Step 3: Match with genres
-    genre_edges <- influences_into_of %>%
+    # Step 2: Edges going INTO that genre
+    influences_into_target <- influence_edges %>%
+      filter(target %in% target_song_ids)
+    
+    # Step 3: Get source genres
+    genre_edges <- influences_into_target %>%
       left_join(nodes_tbl, by = c("source" = "id")) %>%
       filter(node_type == "Song", !is.na(genre)) %>%
-      transmute(from = genre, to = "Oceanus Folk")
+      transmute(from = genre, to = input$target_genre_network)
     
-    # Step 4: Count influences
+    # Step 4: Count strength
     genre_strength <- genre_edges %>%
-      count(from, name = "influence_count")
-    
-    # Step 5: Top 5 with color
-    library(RColorBrewer)
-    top5_genres <- genre_strength %>%
+      count(from, name = "influence_count") %>%
+      filter(influence_count >= input$min_influence) %>%
       arrange(desc(influence_count)) %>%
-      slice(1:5) %>%
-      mutate(color = rev(brewer.pal(5, "Blues")))
+      slice_head(n = input$top_n_genres)
     
-    # Step 6: Build nodes
-    genre_nodes <- unique(c(genre_edges$from, genre_edges$to)) %>%
-      tibble(id = .) %>%
+    # Step 5: Create nodes
+    top_genres <- genre_strength$from
+    top_colors <- brewer.pal(min(length(top_genres), 9), "Blues")
+    
+    genre_nodes <- tibble(id = unique(c(top_genres, input$target_genre_network))) %>%
       left_join(genre_strength, by = c("id" = "from")) %>%
-      left_join(top5_genres %>% select(id = from, top5_color = color), by = "id") %>%
       mutate(
         influence_count = replace_na(influence_count, 1),
         label = id,
         value = influence_count * 2,
         color = case_when(
-          id == "Oceanus Folk" ~ "#FF6347",
-          !is.na(top5_color) ~ top5_color,
-          TRUE ~ "#9ECAE1"
+          id == input$target_genre_network ~ "#FF6347",
+          TRUE ~ top_colors[match(id, top_genres)]
         ),
-        title = paste0("Genre: ", id, "<br>Influence Count: ", influence_count)
+        title = paste0("<b>Genre:</b> ", id,
+                       "<br><b>Influence Count:</b> ", influence_count)
       )
     
-    # Step 7: Draw
-    visNetwork(genre_nodes, genre_edges) %>%
+    genre_edges_filtered <- genre_edges %>%
+      filter(from %in% top_genres)
+    
+    # Step 6: visNetwork
+    visNetwork(genre_nodes, genre_edges_filtered) %>%
+      visNodes(font = list(size = 15), shadow = TRUE) %>%
       visEdges(arrows = "to") %>%
-      visOptions(highlightNearest = TRUE) %>%
-      visLayout(randomSeed = 123) %>%
-      visPhysics(enabled = FALSE)
+      visOptions(
+        highlightNearest = TRUE) %>%
+      visLegend(addNodes = list(
+        list(label = "Target Genre", shape = "dot", color = "#FF6347"),
+        list(label = "Influencing Genres", shape = "dot", color = "#3182bd")
+      ), useGroups = FALSE,
+          width = 0.4,
+          stepY = 100) %>%
+      visInteraction(navigationButtons = TRUE) %>%
+      visLayout(randomSeed = 42) %>%
+      visPhysics(stabilization = FALSE, enabled = FALSE)
   })
+  
   
   
   ### ======== End of Genres Influenced Oceanus Folk ===============
