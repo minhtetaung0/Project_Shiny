@@ -382,9 +382,25 @@ ui <- dashboardPage(
                            )
                          )
                 ),
-                tabPanel("Coming soon")
-                        )
-      )
+                tabPanel("Top Artists Inlfuenced by Oceanus Folk",
+                         sidebarLayout(
+                           sidebarPanel(width = 3,
+                                        selectInput("source_genre", "Select Source Genre:",
+                                                    choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
+                                                    selected = "Oceanus Folk"
+                                        ),
+                                        sliderInput("top_n", "Top N Influenced Artists:", min = 10, max = 35, value = 12),
+                                        selectizeInput("influence_types", "Influence Edge Types:",
+                                                       choices = influence_types,
+                                                       selected = "LyricalReferenceTo",
+                                                       multiple = TRUE,
+                                                       options = list(placeholder = 'Select one or more edge types'))
+                           ),
+                           mainPanel(
+                             plotlyOutput("lollipopPlot", height = "800px")
+                           )
+                         )
+      )))
       ,
       tabItem(tabName = "cluster",
               fluidRow(
@@ -1089,6 +1105,8 @@ server <- function(input, output, session) {
   
   ## ================= Oceanus Folk Influence ======================
   
+  ### ====== Genre influenced bu oceanus folk ==============
+  
   output$of_treemap <- renderPlot({
     req(input$of_song_genre)
     
@@ -1116,7 +1134,71 @@ server <- function(input, output, session) {
         theme(legend.position = "none")
     }
   })
-
+  
+  ### ====== End of Genre influenced by oceanus folk ==============
+  
+  ### ====== Artisits influenced by Oceanus folk =========
+  
+  output$lollipopPlot <- renderPlotly({
+    req(input$source_genre, input$influence_types)
+    
+    # Step 1: Get songs of the selected genre
+    source_songs <- nodes_tbl %>%
+      filter(node_type == "Song", genre == input$source_genre)
+    
+    # Step 2: Get influence edges from selected edge types
+    edges_of_interest <- edges_tbl %>%
+      filter(edge_type %in% input$influence_types,
+             source %in% source_songs$id)
+    
+    # Step 3: Get influenced song IDs
+    influenced_song_ids <- edges_of_interest$target
+    
+    # Step 4: Count top artists who performed those influenced songs
+    top_artist_ids <- edges_tbl %>%
+      filter(edge_type == "PerformerOf", target %in% influenced_song_ids) %>%
+      count(source, sort = TRUE) %>%
+      arrange(desc(n), source) %>%       # enforce a stable tie-break
+      slice_head(n = input$top_n)        # strict top-N only
+    
+    
+    # Step 5: Join to get artist names
+    top_artists <- top_artist_ids %>%
+      left_join(nodes_tbl, by = c("source" = "id")) %>%
+      filter(!is.na(name)) %>%
+      rename(artist = name, count = n) %>%
+      mutate(artist = fct_reorder(artist, count))
+    
+    # Step 6: Plot lollipop
+    plot_ly(top_artists) %>%
+      add_segments(x = 0, xend = ~count,
+                   y = ~artist, yend = ~artist,
+                   line = list(color = 'gray', width = 1.5),
+                   showlegend = FALSE) %>%
+      add_markers(x = ~count, y = ~artist,
+                  marker = list(color = 'firebrick', size = 10),
+                  text = ~paste0("<b>", artist, "</b><br>Songs Influenced: ", count),
+                  hoverinfo = "text") %>%
+      layout(
+        title = list(
+          text = paste("Top", input$top_n, "Artists Influenced by", input$source_genre),
+          x = 0.5,
+          y = 0.95
+          ),
+        xaxis = list(title = "Number of Influenced Songs",
+                     showgrid = FALSE),
+        yaxis = list(title = "", tickfont = list(size = 11), automargin = TRUE,
+                     showgrid = FALSE),
+                margin = list(l = 200, t = 40),  # <-- Increase top margin here
+        height = 20 * nrow(top_artists),
+        plot_bgcolor = "#f4edf4",   # inside the chart area
+        paper_bgcolor = "#f4edf4"   # outside the chart area
+      )
+  })
+  
+  
+  
+  ### ========= End of Artisits influenced by Oceanus folk =========
   
   ## ================= End of Oceanus Folk Influence ======================
   
