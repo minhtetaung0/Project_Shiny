@@ -381,7 +381,7 @@ ui <- dashboardPage(
                     tabsetPanel(
                       tabPanel("Optimal Clusters", plotOutput("elbowPlot")),
                       tabPanel("Cluster Plot", plotOutput("clusterPlot")),
-                      tabPanel("Cluster Characteristics", plotOutput("clusterChars")),
+                      tabPanel("Cluster Characteristics", plotlyOutput("clusterChars")),
                       tabPanel("Cluster Members", DT::dataTableOutput("clusterMembers"))
                     )
                 )
@@ -1106,20 +1106,27 @@ server <- function(input, output, session) {
   })
   
   # Cluster characteristics
-  output$clusterChars <- renderPlot({
+  output$clusterChars <- renderPlotly({
     req(cluster_results())
     
-    if(input$cluster_method == "Hierarchical") {
-      clusters <- cutree(cluster_results(), k = input$n_clusters)
-    } else {
-      clusters <- cluster_results()$cluster
-    }
+    # Check clustering results
+    clusters <- cluster_results()$cluster
+    print("Clustering Results:")
+    print(clusters)
     
-    p <- cluster_data %>%
+    cluster_data_with_cluster <- cluster_data %>%
       as.data.frame() %>%
-      mutate(Cluster = as.factor(clusters)) %>%
+      mutate(Cluster = as.factor(clusters)) 
+    
+    plot_data <- cluster_data_with_cluster %>%
       pivot_longer(-Cluster, names_to = "Variable", values_to = "Value") %>%
-      ggplot(aes(x = Variable, y = Value, fill = Cluster)) +
+      filter(!is.na(Value)) 
+    
+    print("Data for Plotting:")
+    print(head(plot_data))
+    
+    # Plot the boxplot
+    p <- ggplot(plot_data, aes(x = Variable, y = Value, fill = Cluster)) +
       geom_boxplot() +
       facet_wrap(~ Cluster, ncol = 2) +
       labs(title = "Cluster Characteristics by Variable",
@@ -1127,7 +1134,7 @@ server <- function(input, output, session) {
       theme_minimal() +
       theme(axis.text.x = element_text(angle = 45, hjust = 1))
     
-    ggplotly(p) # Ensure ggplotly is used to render the plot
+    ggplotly(p)
   })
   
   # Cluster members table
