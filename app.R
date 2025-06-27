@@ -17,6 +17,7 @@ library(fmsb)
 library(forcats)
 library(shinydashboard)
 library(shinythemes)
+library(treemapify)
 library(cluster)
 library(NbClust)
 
@@ -186,7 +187,8 @@ ui <- dashboardPage(
       menuItem("Artists Profiles", tabName = "artists", icon = icon("users")),
       menuItem("Influence Network", icon = icon("project-diagram"), startExpanded = FALSE,
         menuSubItem("Who has Sailor influenced?", tabName = "network"),
-        menuSubItem("Who has influenced Sailor?", tabName = "sailor_influencers")),
+        menuSubItem("Who has influenced Sailor?", tabName = "sailor_influencers"),
+        menuSubItem("Oceanus Folk Inlfuence", tabName = "oceanus")),
       menuItem("Cluster Analysis", tabName = "cluster", icon = icon("layer-group")),
       menuItem("Future Predictions", tabName = "future", icon = icon("chart-line"))
     )
@@ -362,7 +364,28 @@ ui <- dashboardPage(
               ))
       )
       ,
-      
+      tabItem(tabName = "oceanus",
+              tabsetPanel(
+                tabPanel("Genres Influenced by Oceanus Folk",
+                         sidebarLayout(
+                           sidebarPanel( width = 3 ,
+                             selectizeInput(
+                               inputId = "of_song_genre",
+                               label = "Select Genre:",
+                               choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
+                               selected = "Oceanus Folk",
+                               multiple = FALSE
+                             )
+                           ),
+                           mainPanel(
+                             plotOutput("of_treemap", height = "700px")
+                           )
+                         )
+                ),
+                tabPanel("Coming soon")
+                        )
+      )
+      ,
       tabItem(tabName = "cluster",
               fluidRow(
                 box(title = "Clustering Panel", width = 3, status = "info",
@@ -943,7 +966,10 @@ server <- function(input, output, session) {
   
   
   # ================= Influence Network Page =======================
-  output$ggraphSailorNetwork <- renderPlot({
+ 
+   ## ================= Who did Sailor influence  =======================
+  
+    output$ggraphSailorNetwork <- renderPlot({
     req(input$edge_type_input)
     
     sailor_id <- nodes_tbl %>%
@@ -1003,6 +1029,10 @@ server <- function(input, output, session) {
       theme(legend.position = "right")
   })
   
+  ## ==============End of Who did Sailor influence  ======================
+  
+  ## ================= Who influenced Sailor ======================
+  
   output$dynamicSailorNetwork <- renderVisNetwork({
     req(input$influence_types_selected)
     
@@ -1055,9 +1085,40 @@ server <- function(input, output, session) {
       visPhysics(stabilization = TRUE)
   })
   
+  ## ================= End of Who influenced Sailor ======================
   
+  ## ================= Oceanus Folk Influence ======================
   
+  output$of_treemap <- renderPlot({
+    req(input$of_song_genre)
+    
+    influence_edges <- edges_tbl %>%
+      filter(edge_type %in% influence_types)
+    
+    of_songs <- nodes_tbl %>%
+      filter(node_type == "Song", genre == input$of_song_genre)
+    
+    of_genres <- influence_edges %>%
+      filter(source %in% of_songs$id) %>%
+      left_join(nodes_tbl, by = c("target" = "id")) %>%
+      filter(node_type == "Song", !is.na(genre)) %>%
+      count(genre, sort = TRUE) %>%
+      mutate(label_text = paste0(genre, "\n(", n, ")"))
+    
+    if (nrow(of_genres) == 0) {
+      plot.new()
+      title("No influenced genres found for selected genre.")
+    } else {
+      ggplot(of_genres, aes(area = n, fill = genre, label = label_text)) +
+        geom_treemap() +
+        geom_treemap_text(color = "white", place = "center", size = 10, reflow = TRUE) +
+        labs(title = paste("Genres Influenced by", input$of_song_genre)) +
+        theme(legend.position = "none")
+    }
+  })
+
   
+  ## ================= End of Oceanus Folk Influence ======================
   
   # ================= End of Influence Network Page =======================
   
