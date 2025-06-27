@@ -20,6 +20,7 @@ library(shinythemes)
 library(treemapify)
 library(cluster)
 library(NbClust)
+library(dbscan)
 
 # ===== Data Preprocessing =====
 data_path <- "data/MC1_graph.json"
@@ -97,6 +98,8 @@ artist_works <- created_links %>%
   left_join(works_tbl, by = "work_id") %>%
   filter(!is.na(release_date))
 
+max_release <- max(artist_works$release_date, na.rm = TRUE)
+
 # --- Artists Profile Summary ---
 artists_profile <- artist_works %>%
   group_by(person_id) %>%
@@ -110,7 +113,9 @@ artists_profile <- artist_works %>%
   ) %>%
   mutate(
     first_notable = ifelse(is.infinite(first_notable), NA_integer_, first_notable),
-    time_to_notability = ifelse(!is.na(first_notable), first_notable - first_release, NA)
+    time_to_notability = ifelse(!is.na(first_notable), 
+                                first_notable - first_release, 
+                                max_release + 5 - first_release)
   )
 
 # --- Collaboration Count using superedge ---
@@ -144,6 +149,7 @@ cluster_data <- artists_profile %>%
   select(total_works, notable_works, oceanus_folk_works, collaborations, time_to_notability, genre_diversity) %>%
   na.omit() %>%
   scale()  # Standardize the variables
+
 
 
 ### ---- Get Sailor Shift ID ----
@@ -388,6 +394,7 @@ ui <- dashboardPage(
       ,
       tabItem(tabName = "cluster",
               fluidRow(
+                # Sidebar Box
                 box(title = "Clustering Panel", width = 3, status = "info",
                     selectInput("cluster_vars", "Select Variables for Clustering:",
                                 choices = c("total_works", "notable_works", "oceanus_folk_works", 
@@ -395,29 +402,44 @@ ui <- dashboardPage(
                                 selected = c("total_works", "notable_works", "oceanus_folk_works"),
                                 multiple = TRUE),
                     radioButtons("cluster_method", "Clustering Method:",
-                                 choices = c("K-means", "Hierarchical", "PAM"),
+                                 choices = c("K-means", "DBSCAN", "PAM"),
                                  selected = "K-means"),
-                    sliderInput("n_clusters", "Number of Clusters:", 2, 8, value = 4),
+                    conditionalPanel(
+                      condition = "input.cluster_method == 'K-means' || input.cluster_method == 'PAM'",
+                      sliderInput("n_clusters", "Number of Clusters:", 2, 8, value = 3)
+                    ),
+                    conditionalPanel(
+                      condition = "input.cluster_method == 'DBSCAN'",
+                      sliderInput("eps", "Epsilon (Neighborhood Radius):", 
+                                  min = 0.1, max = 2, value = 0.5, step = 0.1),
+                      numericInput("minPts", "Minimum Points:", value = 5, min = 2)
+                    ),
                     actionButton("run_cluster", "Run Cluster Analysis")
                 ),
                 
+                # Main Content Box
                 box(title = "Cluster Analysis Results", width = 9, status = "success",
                     tabsetPanel(
-                      tabPanel("Optimal Clusters", plotOutput("elbowPlot")),
-                      tabPanel("Cluster Plot",
-                               conditionalPanel(
-                                 condition = "input.cluster_method == 'Hierarchical'",
-                                 plotOutput("clusterPlot", height = "800px", width = "100%")
-                               ),
-                               conditionalPanel(
-                                 condition = "input.cluster_method != 'Hierarchical'",
-                                 plotOutput("clusterPlot")
-                               )
+                      tabPanel("Optimal Clusters",
+                               plotOutput("elbowPlot" , height = "550px")
                       ),
-                      tabPanel("Cluster Characteristics", plotlyOutput("clusterChars")),
-                      tabPanel("Cluster Members", DT::dataTableOutput("clusterMembers"))
+                      tabPanel("Cluster Propotion",
+                               plotlyOutput("clusterProportionPlot", height = "550px")
+                      ),
+                      tabPanel("Cluster Plot",
+                               plotlyOutput("clusterPlot", height = "550px")
+                      ),
+                      tabPanel("Cluster Characteristics", 
+                               plotlyOutput("clusterChars", height = "550px") 
+                      )
                     )
                 )
+              ),
+              fluidRow(
+                valueBoxOutput("aic_box", width = 3),
+                valueBoxOutput("bic_box", width = 3),
+                valueBoxOutput("lr_box", width = 3),
+                valueBoxOutput("entropy_box", width = 3)
               )
       ),
       
@@ -1134,17 +1156,67 @@ server <- function(input, output, session) {
   
   # ================= Cluster Analysis Page =======================
   
-  # Cluster results
   cluster_results <- eventReactive(input$run_cluster, {
-    req(cluster_data, input$n_clusters)
+    req(cluster_data)
+    
+    # Subset data based on selected variables
+    selected_vars <- input$cluster_vars
+    if(is.null(selected_vars)) {
+      selected_vars <- c("total_works", "notable_works", "oceanus_folk_works")
+    }
+    
+    current_data <- cluster_data[, selected_vars, drop = FALSE]
     
     if(input$cluster_method == "K-means") {
       set.seed(123)
-      return(kmeans(cluster_data, centers = input$n_clusters, nstart = 25))
-    } else if(input$cluster_method == "Hierarchical") {
-      return(hclust(dist(cluster_data), method = "ward.D2"))
+      kmeans(current_data, centers = input$n_clusters, nstart = 25)
+    } else if(input$cluster_method == "DBSCAN") {
+      dbscan::dbscan(current_data, eps = input$eps, minPts = input$minPts)
     } else {
-      return(pam(cluster_data, k = input$n_clusters))
+      pam(current_data, k = input$n_clusters)
+    }
+  })
+  
+  # Reactive cluster data frame
+  cluster_df <- reactive({
+    req(input$cluster_vars, cluster_results())
+    
+    cluster_data[, input$cluster_vars, drop = FALSE] %>%
+      as.data.frame() %>%
+      mutate(Cluster = as.factor(cluster_results()$cluster),
+             person_id = as.integer(rownames(.))) %>%
+      left_join(artists_profile %>% select(person_id, name), by = "person_id")
+  })
+  
+  # Reactive PCA results
+  pca_result <- reactive({
+    req(cluster_df(), input$cluster_vars)
+    prcomp(cluster_df()[, input$cluster_vars], scale. = FALSE)
+  })
+  
+  # Reactive PCA data frame
+  pca_df <- reactive({
+    req(pca_result(), cluster_df())
+    df <- as.data.frame(pca_result()$x[, 1:2])
+    df$Cluster <- cluster_df()$Cluster
+    df$name <- cluster_df()$name
+    df
+  })
+  
+  # Silhouette plot 
+  output$silhouettePlot <- renderPlot({
+    req(cluster_results())
+    
+    selected_vars <- input$cluster_vars
+    if(is.null(selected_vars)) {
+      selected_vars <- c("total_works", "notable_works", "oceanus_folk_works")
+    }
+    current_data <- cluster_data[, selected_vars, drop = FALSE]
+    
+    if(input$cluster_method != "DBSCAN") {
+      silhouette_avg <- silhouette(cluster_results()$cluster, dist(current_data))
+      fviz_silhouette(silhouette_avg) +
+        theme_minimal()
     }
   })
   
@@ -1152,43 +1224,137 @@ server <- function(input, output, session) {
   output$elbowPlot <- renderPlot({
     req(cluster_data)
     
-    # Using fviz_nbclust (for elbow method) directly with ggplot
-    fviz_nbclust(cluster_data, kmeans, method = "wss") +
-      labs(title = "Elbow Method for Optimal Number of Clusters") +
-      theme_minimal()
-  })
-  
-  # Cluster plot
-  output$clusterPlot <- renderPlot({
-    req(cluster_results())
-    
-    # Use ggplot directly if possible for simplicity
-    if(input$cluster_method == "Hierarchical") {
-      plot(cluster_results(), main = "Hierarchical Clustering Dendrogram")
-      rect.hclust(cluster_results(), k = input$n_clusters, border = 2:5)
+    if(input$cluster_method != "DBSCAN") {
+      fviz_nbclust(cluster_data[, input$cluster_vars, drop = FALSE], 
+                   kmeans, method = "wss") +
+        labs(title = "Elbow Method for Optimal Number of Clusters") +
+        theme_minimal()
     } else {
-      # Plot cluster results directly
-      fviz_cluster(cluster_results(), data = cluster_data,
-                   geom = "point", stand = FALSE,
-                   ellipse.type = "norm") +
-        theme_minimal() +
-        labs(title = paste(input$cluster_method, "Cluster Plot"))
+      # For DBSCAN, show kNN distance plot to help determine eps
+      kNNdistplot(cluster_data[, input$cluster_vars, drop = FALSE], 
+                  k = input$minPts)
+      abline(h = input$eps, col = "red", lty = 2)
+      title("kNN Distance Plot (Help determine eps)")
     }
   })
   
-  # Cluster Characteristics
-  output$clusterChars <- renderPlotly({
+  # Cluster proportion plot
+  output$clusterProportionPlot <- renderPlotly({
     req(cluster_results())
     
-    clusters <- if (input$cluster_method == "Hierarchical") {
-      cutree(cluster_results(), k = input$n_clusters)
+    # Get cluster assignments
+    clusters <- if (input$cluster_method == "DBSCAN") {
+      cluster_results()$cluster
     } else if (!is.null(cluster_results()$cluster)) {
       cluster_results()$cluster
     } else {
       return(NULL)
     }
     
-    cluster_data_with_cluster <- cluster_data %>%
+    # Create proportion data with cluster labels
+    prop_data <- data.frame(Cluster = factor(clusters)) %>%
+      count(Cluster) %>%
+      mutate(
+        Percentage = round(n / sum(n) * 100, 1),
+        ClusterLabel = ifelse(Cluster == 0, "Noise", paste("Cluster", Cluster)),
+        hover_text = paste0(
+          "<b>", ClusterLabel, "</b><br>",
+          "Count: ", n, "<br>",
+          "Percentage: ", Percentage, "%"
+        )
+      )
+    
+    # Create interactive plot
+    plot_ly(
+      prop_data,
+      labels = ~ClusterLabel,
+      values = ~n,
+      type = 'pie',
+      textposition = 'inside',
+      textinfo = 'percent',
+      hoverinfo = 'text',
+      text = ~hover_text,
+      marker = list(
+        colors = RColorBrewer::brewer.pal(nrow(prop_data), "Set3"),
+        line = list(color = '#FFFFFF', width = 1)
+      ),
+      showlegend = TRUE
+    ) %>%
+      layout(
+        title = list(
+          text = "<b>Cluster Distribution</b>",
+          x = 0.5,
+          font = list(size = 14)
+        ),
+        margin = list(t = 50, b = 20, l = 20, r = 20),
+        legend = list(
+          orientation = "h",
+          y = -0.1
+        )
+      ) %>%
+      config(displayModeBar = FALSE)
+  })
+  
+  # Cluster plot
+  output$clusterPlot <- renderPlotly({
+    req(cluster_results())
+    
+    selected_vars <- input$cluster_vars
+    if (is.null(selected_vars)) {
+      selected_vars <- c("total_works", "notable_works", "oceanus_folk_works")
+    }
+    
+    # Prepare merged data
+    cluster_df <- cluster_data[, selected_vars, drop = FALSE] %>%
+      as.data.frame() %>%
+      mutate(Cluster = as.factor(cluster_results()$cluster),
+             person_id = as.integer(rownames(.))) %>%
+      left_join(artists_profile %>% select(person_id, name), by = "person_id")
+    
+    # PCA transformation
+    pca_result <- prcomp(cluster_df[, selected_vars], scale. = TRUE)
+    pca_df <- pca_df()
+    colnames(pca_df) <- c("PC1", "PC2")
+    pca_df$Cluster <- cluster_df$Cluster
+    pca_df$Artist <- cluster_df$name
+    
+    # Plotly scatter plot
+    plot_ly(
+      data = pca_df,
+      x = ~PC1, y = ~PC2,
+      type = 'scatter',
+      mode = 'markers',
+      color = ~Cluster,
+      text = ~paste("Artist:", Artist, "<br>Cluster:", Cluster),
+      hoverinfo = "text",
+      marker = list(size = 8, line = list(width = 1, color = 'black'))
+    ) %>%
+      layout(
+        title = "Cluster Plot (PCA Projection)",
+        xaxis = list(title = "PC1"),
+        yaxis = list(title = "PC2")
+      )
+  })
+  
+  # Cluster Characteristics
+  output$clusterChars <- renderPlotly({
+    req(cluster_results())
+    
+    selected_vars <- input$cluster_vars
+    if(is.null(selected_vars)) {
+      selected_vars <- c("total_works", "notable_works", "oceanus_folk_works")
+    }
+    current_data <- cluster_data[, selected_vars, drop = FALSE]
+    
+    clusters <- if (input$cluster_method == "DBSCAN") {
+      cluster_results()$cluster
+    } else if (!is.null(cluster_results()$cluster)) {
+      cluster_results()$cluster
+    } else {
+      return(NULL)
+    }
+    
+    cluster_data_with_cluster <- current_data %>%
       as.data.frame() %>%
       mutate(Cluster = as.factor(clusters))
     
@@ -1207,24 +1373,92 @@ server <- function(input, output, session) {
     ggplotly(p)
   })
   
-  # Cluster members table
-  output$clusterMembers <- DT::renderDataTable({
-    req(cluster_results())
+  # Value Box calculations
+  model_stats <- reactive({
+    req(cluster_results(), input$cluster_method)
     
-    clusters <- if (input$cluster_method == "Hierarchical") {
-      cutree(cluster_results(), k = input$n_clusters)
+    if (input$cluster_method %in% c("K-means", "PAM")) {
+      k <- if (input$cluster_method == "K-means") input$n_clusters else cluster_results()$nc
+      data_used <- cluster_data[, input$cluster_vars, drop = FALSE]
+      n <- nrow(data_used)
+      p <- ncol(data_used)
+      
+      # Total within-cluster sum of squares
+      wss <- if (input$cluster_method == "K-means") {
+        sum(cluster_results()$withinss)
+      } else {
+        sum(cluster_results()$withinss)
+      }
+      
+      # Log-likelihood approximation from WSS
+      log_likelihood <- -n * p / 2 * log(wss / n)
+      
+      # AIC and BIC
+      aic <- -2 * log_likelihood + 2 * k * p
+      bic <- -2 * log_likelihood + log(n) * k * p
+      
+      # Pseudo likelihood ratio: compare to total variance
+      total_ss <- sum(scale(data_used, scale = FALSE)^2)
+      likelihood_ratio <- total_ss - wss
+      
+      # Entropy (optional and rough): based on cluster proportions
+      cluster_sizes <- table(cluster_results()$cluster)
+      proportions <- cluster_sizes / sum(cluster_sizes)
+      entropy <- -sum(proportions * log(proportions)) / log(length(proportions))
+      
+      list(
+        AIC = round(aic),
+        BIC = round(bic),
+        LikelihoodRatio = round(likelihood_ratio),
+        Entropy = round(entropy, 3)
+      )
     } else {
-      cluster_results()$cluster
+      NULL  # For DBSCAN, skip this
     }
-    
-    clustered_df <- artists_profile %>%
-      select(name, total_works, notable_works, oceanus_folk_works, 
-             collaborations, time_to_notability, genre_diversity)
-    
-    clustered_df$Cluster <- clusters
-    
-    clustered_df %>% relocate(Cluster, .before = name)
   })
+  
+  # Value boxes
+  
+  output$aic_box <- renderValueBox({
+    req(model_stats())
+    valueBox(
+      value = formatC(model_stats()$AIC, format = "d", big.mark = ","),
+      subtitle = "AIC",
+      icon = icon("calculator"),
+      color = "yellow"
+    )
+  })
+  
+  output$bic_box <- renderValueBox({
+    req(model_stats())
+    valueBox(
+      value = formatC(model_stats()$BIC, format = "d", big.mark = ","),
+      subtitle = "BIC",
+      icon = icon("calculator"),
+      color = "yellow"
+    )
+  })
+  
+  output$lr_box <- renderValueBox({
+    req(model_stats())
+    valueBox(
+      value = formatC(model_stats()$LikelihoodRatio, format = "d", big.mark = ","),
+      subtitle = "Likelihood Ratio",
+      icon = icon("chart-line"),
+      color = "yellow"
+    )
+  })
+  
+  output$entropy_box <- renderValueBox({
+    req(model_stats())
+    valueBox(
+      value = model_stats()$Entropy,
+      subtitle = "Entropy",
+      icon = icon("braille"),
+      color = "yellow"
+    )
+  })
+  
   
   # ================= End of Cluster Analysis Page =======================
   
