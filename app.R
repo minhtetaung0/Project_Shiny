@@ -20,6 +20,8 @@ library(shinythemes)
 library(treemapify)
 library(cluster)
 library(NbClust)
+library(RColorBrewer)
+
 
 # ===== Data Preprocessing =====
 data_path <- "data/MC1_graph.json"
@@ -186,9 +188,9 @@ ui <- dashboardPage(
       menuItem("EDA", tabName = "eda", icon = icon("chart-bar")),
       menuItem("Artists Profiles", tabName = "artists", icon = icon("users")),
       menuItem("Influence Network", icon = icon("project-diagram"), startExpanded = FALSE,
-        menuSubItem("Who has Sailor influenced?", tabName = "network"),
-        menuSubItem("Who has influenced Sailor?", tabName = "sailor_influencers"),
-        menuSubItem("Oceanus Folk Inlfuence", tabName = "oceanus")),
+               menuSubItem("Who has Sailor influenced?", tabName = "network"),
+               menuSubItem("Who has influenced Sailor?", tabName = "sailor_influencers"),
+               menuSubItem("Oceanus Folk Inlfuence", tabName = "oceanus")),
       menuItem("Cluster Analysis", tabName = "cluster", icon = icon("layer-group")),
       menuItem("Future Predictions", tabName = "future", icon = icon("chart-line"))
     )
@@ -211,11 +213,11 @@ ui <- dashboardPage(
               fluidRow(
                 box(title = "Year Range and Genre Selector", width = 2, status = "warning", solidHeader = TRUE,
                     sliderInput("donut_year_range", "Select Year Range:",
-                                  min = min(artist_works$release_date, na.rm = TRUE),
-                                  max = max(artist_works$release_date, na.rm = TRUE),
-                                  value = c(1990, 2000),
-                                  step = 5,
-                                  sep = ""),
+                                min = min(artist_works$release_date, na.rm = TRUE),
+                                max = max(artist_works$release_date, na.rm = TRUE),
+                                value = c(1990, 2000),
+                                step = 5,
+                                sep = ""),
                     selectizeInput("selected_genres", "Select up to 3 Genres:",
                                    choices = unique(artist_works$genre),
                                    selected = c("Oceanus Folk"),
@@ -226,7 +228,7 @@ ui <- dashboardPage(
                                      class = "btn-info btn-block"))
                 ),
                 box(title = "Genre Percentage (Donut Chart)", width = 5, status = "warning", solidHeader = TRUE,
-                             plotlyOutput("genreDonutPlot", height = "300px")
+                    plotlyOutput("genreDonutPlot", height = "300px")
                 ),
                 box(title = "Genre Comparison Over Time", width = 5, status = "success", solidHeader = TRUE,
                     plotlyOutput("genreTimelinePlot", height = "300px"))
@@ -329,14 +331,14 @@ ui <- dashboardPage(
                     )
                 ),
                 div(class = "custom-box-green",
-                  box(
-                    width = 9,
-                    title = "Sailor Shift Influence Network",
-                    solidHeader = TRUE,
-                    visNetworkOutput("dynamicSailorNetwork", height = "800px")
+                    box(
+                      width = 9,
+                      title = "Sailor Shift Influence Network",
+                      solidHeader = TRUE,
+                      visNetworkOutput("dynamicSailorNetwork", height = "800px")
+                    )
                 )
-              )
-      ))
+              ))
       ,
       
       tabItem(tabName = "sailor_influencers",
@@ -361,7 +363,7 @@ ui <- dashboardPage(
                       plotOutput("ggraphSailorNetwork", height = "800px")
                     )
                     
-              ))
+                ))
       )
       ,
       tabItem(tabName = "oceanus",
@@ -369,13 +371,13 @@ ui <- dashboardPage(
                 tabPanel("Genres Influenced by Oceanus Folk",
                          sidebarLayout(
                            sidebarPanel( width = 3 ,
-                             selectizeInput(
-                               inputId = "of_song_genre",
-                               label = "Select Genre:",
-                               choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
-                               selected = "Oceanus Folk",
-                               multiple = FALSE
-                             )
+                                         selectizeInput(
+                                           inputId = "of_song_genre",
+                                           label = "Select Genre:",
+                                           choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
+                                           selected = "Oceanus Folk",
+                                           multiple = FALSE
+                                         )
                            ),
                            mainPanel(
                              plotOutput("of_treemap", height = "700px")
@@ -394,16 +396,26 @@ ui <- dashboardPage(
                                                        choices = influence_types,
                                                        selected = "LyricalReferenceTo",
                                                        multiple = TRUE,
-                                                       options = list(placeholder = 'Select one or more edge types'))
+                                                       options = list(placeholder = 'Select one or more edge types')
+                                                       )
                            ),
                            mainPanel(
                              plotlyOutput("lollipopPlot", height = "800px")
                            )
                          )
-      )))
-      ,
+                ),
+                tabPanel("Genres Influenced Oceanus Folk",
+                         visNetworkOutput("genre_influence_net", height = "600px")
+                )
+                                        
+                                        
+                                                    
+              )
+      ),
+      
       tabItem(tabName = "cluster",
               fluidRow(
+                # Sidebar Box
                 box(title = "Clustering Panel", width = 3, status = "info",
                     selectInput("cluster_vars", "Select Variables for Clustering:",
                                 choices = c("total_works", "notable_works", "oceanus_folk_works", 
@@ -411,19 +423,44 @@ ui <- dashboardPage(
                                 selected = c("total_works", "notable_works", "oceanus_folk_works"),
                                 multiple = TRUE),
                     radioButtons("cluster_method", "Clustering Method:",
-                                 choices = c("K-means", "Hierarchical", "PAM"),
+                                 choices = c("K-means", "DBSCAN", "PAM"),
                                  selected = "K-means"),
-                    sliderInput("n_clusters", "Number of Clusters:", 2, 8, value = 3),
+                    conditionalPanel(
+                      condition = "input.cluster_method == 'K-means' || input.cluster_method == 'PAM'",
+                      sliderInput("n_clusters", "Number of Clusters:", 2, 8, value = 3)
+                    ),
+                    conditionalPanel(
+                      condition = "input.cluster_method == 'DBSCAN'",
+                      sliderInput("eps", "Epsilon (Neighborhood Radius):", 
+                                  min = 0.1, max = 2, value = 0.5, step = 0.1),
+                      numericInput("minPts", "Minimum Points:", value = 5, min = 2)
+                    ),
                     actionButton("run_cluster", "Run Cluster Analysis")
                 ),
+                
+                # Main Content Box
                 box(title = "Cluster Analysis Results", width = 9, status = "success",
                     tabsetPanel(
-                      tabPanel("Optimal Clusters", plotOutput("elbowPlot")),
-                      tabPanel("Cluster Plot", plotOutput("clusterPlot")),
-                      tabPanel("Cluster Characteristics", plotlyOutput("clusterChars")),
-                      tabPanel("Cluster Members", DT::dataTableOutput("clusterMembers"))
+                      tabPanel("Optimal Clusters",
+                               plotOutput("elbowPlot" , height = "550px")
+                      ),
+                      tabPanel("Cluster Propotion",
+                               plotlyOutput("clusterProportionPlot", height = "550px")
+                      ),
+                      tabPanel("Cluster Plot",
+                               plotlyOutput("clusterPlot", height = "550px")
+                      ),
+                      tabPanel("Cluster Characteristics", 
+                               plotlyOutput("clusterChars", height = "550px") 
+                      )
                     )
                 )
+              ),
+              fluidRow(
+                valueBoxOutput("aic_box", width = 3),
+                valueBoxOutput("bic_box", width = 3),
+                valueBoxOutput("lr_box", width = 3),
+                valueBoxOutput("entropy_box", width = 3)
               )
       ),
       
@@ -439,7 +476,6 @@ ui <- dashboardPage(
 
 # ===== Server =====
 server <- function(input, output, session) {
-  
   
   # ================= Overview Page =======================
   
@@ -1197,8 +1233,62 @@ server <- function(input, output, session) {
   })
   
   
+  ### ========= End of Artists influenced by Oceanus folk =========
   
-  ### ========= End of Artisits influenced by Oceanus folk =========
+  ### ======== Genres Influenced Oceanus Folk ===============
+
+  output$genre_influence_net <- renderVisNetwork({
+    # Step 1: Get Oceanus Folk song IDs
+    of_song_ids <- of_songs$id
+    
+    # Step 2: Filter relevant edges
+    influences_into_of <- influence_edges %>%
+      filter(target %in% of_song_ids)
+    
+    # Step 3: Match with genres
+    genre_edges <- influences_into_of %>%
+      left_join(nodes_tbl, by = c("source" = "id")) %>%
+      filter(node_type == "Song", !is.na(genre)) %>%
+      transmute(from = genre, to = "Oceanus Folk")
+    
+    # Step 4: Count influences
+    genre_strength <- genre_edges %>%
+      count(from, name = "influence_count")
+    
+    # Step 5: Top 5 with color
+    library(RColorBrewer)
+    top5_genres <- genre_strength %>%
+      arrange(desc(influence_count)) %>%
+      slice(1:5) %>%
+      mutate(color = rev(brewer.pal(5, "Blues")))
+    
+    # Step 6: Build nodes
+    genre_nodes <- unique(c(genre_edges$from, genre_edges$to)) %>%
+      tibble(id = .) %>%
+      left_join(genre_strength, by = c("id" = "from")) %>%
+      left_join(top5_genres %>% select(id = from, top5_color = color), by = "id") %>%
+      mutate(
+        influence_count = replace_na(influence_count, 1),
+        label = id,
+        value = influence_count * 2,
+        color = case_when(
+          id == "Oceanus Folk" ~ "#FF6347",
+          !is.na(top5_color) ~ top5_color,
+          TRUE ~ "#9ECAE1"
+        ),
+        title = paste0("Genre: ", id, "<br>Influence Count: ", influence_count)
+      )
+    
+    # Step 7: Draw
+    visNetwork(genre_nodes, genre_edges) %>%
+      visEdges(arrows = "to") %>%
+      visOptions(highlightNearest = TRUE) %>%
+      visLayout(randomSeed = 123) %>%
+      visPhysics(enabled = FALSE)
+  })
+  
+  
+  ### ======== End of Genres Influenced Oceanus Folk ===============
   
   ## ================= End of Oceanus Folk Influence ======================
   
@@ -1298,7 +1388,6 @@ server <- function(input, output, session) {
   })
   
   # ================= End of Cluster Analysis Page =======================
-  
   
 }
 
