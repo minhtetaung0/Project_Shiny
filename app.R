@@ -374,13 +374,23 @@ ui <- dashboardPage(
                     radioButtons("cluster_method", "Clustering Method:",
                                  choices = c("K-means", "Hierarchical", "PAM"),
                                  selected = "K-means"),
-                    sliderInput("n_clusters", "Number of Clusters:", 2, 8, value = 3),
+                    sliderInput("n_clusters", "Number of Clusters:", 2, 8, value = 4),
                     actionButton("run_cluster", "Run Cluster Analysis")
                 ),
+                
                 box(title = "Cluster Analysis Results", width = 9, status = "success",
                     tabsetPanel(
                       tabPanel("Optimal Clusters", plotOutput("elbowPlot")),
-                      tabPanel("Cluster Plot", plotOutput("clusterPlot")),
+                      tabPanel("Cluster Plot",
+                               conditionalPanel(
+                                 condition = "input.cluster_method == 'Hierarchical'",
+                                 plotOutput("clusterPlot", height = "800px", width = "100%")
+                               ),
+                               conditionalPanel(
+                                 condition = "input.cluster_method != 'Hierarchical'",
+                                 plotOutput("clusterPlot")
+                               )
+                      ),
                       tabPanel("Cluster Characteristics", plotlyOutput("clusterChars")),
                       tabPanel("Cluster Members", DT::dataTableOutput("clusterMembers"))
                     )
@@ -1105,27 +1115,26 @@ server <- function(input, output, session) {
     }
   })
   
-  # Cluster characteristics
+  # Cluster Characteristics
   output$clusterChars <- renderPlotly({
     req(cluster_results())
     
-    # Check clustering results
-    clusters <- cluster_results()$cluster
-    print("Clustering Results:")
-    print(clusters)
+    clusters <- if (input$cluster_method == "Hierarchical") {
+      cutree(cluster_results(), k = input$n_clusters)
+    } else if (!is.null(cluster_results()$cluster)) {
+      cluster_results()$cluster
+    } else {
+      return(NULL)
+    }
     
     cluster_data_with_cluster <- cluster_data %>%
       as.data.frame() %>%
-      mutate(Cluster = as.factor(clusters)) 
+      mutate(Cluster = as.factor(clusters))
     
     plot_data <- cluster_data_with_cluster %>%
       pivot_longer(-Cluster, names_to = "Variable", values_to = "Value") %>%
-      filter(!is.na(Value)) 
+      filter(!is.na(Value))
     
-    print("Data for Plotting:")
-    print(head(plot_data))
-    
-    # Plot the boxplot
     p <- ggplot(plot_data, aes(x = Variable, y = Value, fill = Cluster)) +
       geom_boxplot() +
       facet_wrap(~ Cluster, ncol = 2) +
@@ -1141,17 +1150,19 @@ server <- function(input, output, session) {
   output$clusterMembers <- DT::renderDataTable({
     req(cluster_results())
     
-    if(input$cluster_method == "Hierarchical") {
-      clusters <- cutree(cluster_results(), k = input$n_clusters)
+    clusters <- if (input$cluster_method == "Hierarchical") {
+      cutree(cluster_results(), k = input$n_clusters)
     } else {
-      clusters <- cluster_results()$cluster
+      cluster_results()$cluster
     }
     
-    artists_profile %>%
-      filter(row_number() %in% as.numeric(names(clusters))) %>%
-      mutate(Cluster = clusters) %>%
-      select(name, Cluster, total_works, notable_works, oceanus_folk_works, 
+    clustered_df <- artists_profile %>%
+      select(name, total_works, notable_works, oceanus_folk_works, 
              collaborations, time_to_notability, genre_diversity)
+    
+    clustered_df$Cluster <- clusters
+    
+    clustered_df %>% relocate(Cluster, .before = name)
   })
   
   # ================= End of Cluster Analysis Page =======================
