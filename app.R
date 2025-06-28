@@ -1049,34 +1049,6 @@ server <- function(input, output, session) {
   
     ## ================= End of Who influenced Sailor ======================
   
-    ## ================= Oceanus Folk Influence ======================
-  
-  output$genre_treemap_plotly <- renderPlotly({
-    
-    genre_counts <- nodes_tbl %>%
-      filter(node_type == "Song", !is.na(genre)) %>%
-      count(genre, sort = TRUE)
-    
-    plot_ly(
-      data = genre_counts,
-      type = "treemap",
-      labels = ~genre,
-      values = ~n,
-      parents = rep(NA, nrow(genre_counts)),
-      textinfo = "label+value+percent entry",
-      hoverinfo = "label+value+percent entry",
-      marker = list(colors = ~n, colorscale = "Viridis"),
-      domain = list(column = 0)
-    ) %>%
-      layout(
-        margin = list(t = 50, l = 0, r = 0, b = 0),
-        uniformtext = list(minsize = 12, mode = "hide"),
-        title = list(text = "🎵 Treemap of Song Genres", x = 0.05)
-      )
-  })
-  
-
-    ## ================= End of Oceanus Folk Influence ======================
   
   # ================= End of Influence Network Page =======================
   
