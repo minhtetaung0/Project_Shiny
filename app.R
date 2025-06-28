@@ -18,7 +18,10 @@ library(forcats)
 library(shinydashboard)
 library(shinythemes)
 library(treemapify)
-library(viridis)  
+library(cluster)
+library(NbClust)
+library(dbscan)
+library(RColorBrewer)
 
 
 # ===== Data Preprocessing =====
@@ -97,6 +100,8 @@ artist_works <- created_links %>%
   left_join(works_tbl, by = "work_id") %>%
   filter(!is.na(release_date))
 
+max_release <- max(artist_works$release_date, na.rm = TRUE)
+
 # --- Artists Profile Summary ---
 artists_profile <- artist_works %>%
   group_by(person_id) %>%
@@ -110,7 +115,9 @@ artists_profile <- artist_works %>%
   ) %>%
   mutate(
     first_notable = ifelse(is.infinite(first_notable), NA_integer_, first_notable),
-    time_to_notability = ifelse(!is.na(first_notable), first_notable - first_release, NA)
+    time_to_notability = ifelse(!is.na(first_notable), 
+                                first_notable - first_release, 
+                                max_release + 5 - first_release)
   )
 
 # --- Collaboration Count using superedge ---
@@ -138,6 +145,15 @@ artists_profile <- artists_profile %>%
   inner_join(people_tbl, by = "person_id") %>%
   relocate(person_id, name)
 
+# Precompute the necessary variables for clustering outside of the cluster analysis function.
+
+cluster_data <- artists_profile %>%
+  select(total_works, notable_works, oceanus_folk_works, collaborations, time_to_notability, genre_diversity) %>%
+  na.omit() %>%
+  scale()  # Standardize the variables
+
+
+
 ### ---- Get Sailor Shift ID ----
 sailor_id <- nodes_tbl %>% 
   filter(str_detect(name, fixed("Sailor Shift", ignore_case = TRUE))) %>%
@@ -146,6 +162,13 @@ sailor_id <- nodes_tbl %>%
 # ---- Influence Edge Types ----
 influence_types <- c("LyricalReferenceTo", "CoverOf", "InterpolatesFrom", "DirectlySamples", "InStyleOf", 
                      "PerformerOf", "ComposerOf", "LyricistOf", "ProducerOf", "RecordedBy")
+
+# ==== Precompute Oceanus Folk Songs and Influence Edges ====
+of_songs <- nodes_tbl %>%
+  filter(node_type == "Song", genre == "Oceanus Folk")
+
+influence_edges <- edges_tbl %>%
+  filter(edge_type %in% influence_types)
 
 # ---- Extract 1-hop Influence Edges ----
 sailor_edges <- edges_tbl %>%
@@ -178,9 +201,9 @@ ui <- dashboardPage(
       menuItem("EDA", tabName = "eda", icon = icon("chart-bar")),
       menuItem("Artists Profiles", tabName = "artists", icon = icon("users")),
       menuItem("Influence Network", icon = icon("project-diagram"), startExpanded = FALSE,
-        menuSubItem("Who has Sailor influenced?", tabName = "network"),
-        menuSubItem("Who has influenced Sailor?", tabName = "sailor_influencers"),
-        menuSubItem("Oceanus Folk Influence", tabName = "genreTree")),
+               menuSubItem("Who has Sailor influenced?", tabName = "network"),
+               menuSubItem("Who has influenced Sailor?", tabName = "sailor_influencers"),
+               menuSubItem("Oceanus Folk Inlfuence", tabName = "oceanus")),
       menuItem("Cluster Analysis", tabName = "cluster", icon = icon("layer-group")),
       menuItem("Future Predictions", tabName = "future", icon = icon("chart-line"))
     )
@@ -203,11 +226,11 @@ ui <- dashboardPage(
               fluidRow(
                 box(title = "Year Range and Genre Selector", width = 2, status = "warning", solidHeader = TRUE,
                     sliderInput("donut_year_range", "Select Year Range:",
-                                  min = min(artist_works$release_date, na.rm = TRUE),
-                                  max = max(artist_works$release_date, na.rm = TRUE),
-                                  value = c(1990, 2000),
-                                  step = 5,
-                                  sep = ""),
+                                min = min(artist_works$release_date, na.rm = TRUE),
+                                max = max(artist_works$release_date, na.rm = TRUE),
+                                value = c(1990, 2000),
+                                step = 5,
+                                sep = ""),
                     selectizeInput("selected_genres", "Select up to 3 Genres:",
                                    choices = unique(artist_works$genre),
                                    selected = c("Oceanus Folk"),
@@ -218,7 +241,7 @@ ui <- dashboardPage(
                                      class = "btn-info btn-block"))
                 ),
                 box(title = "Genre Percentage (Donut Chart)", width = 5, status = "warning", solidHeader = TRUE,
-                             plotlyOutput("genreDonutPlot", height = "300px")
+                    plotlyOutput("genreDonutPlot", height = "300px")
                 ),
                 box(title = "Genre Comparison Over Time", width = 5, status = "success", solidHeader = TRUE,
                     plotlyOutput("genreTimelinePlot", height = "300px"))
@@ -321,14 +344,14 @@ ui <- dashboardPage(
                     )
                 ),
                 div(class = "custom-box-green",
-                  box(
-                    width = 9,
-                    title = "Sailor Shift Influence Network",
-                    solidHeader = TRUE,
-                    visNetworkOutput("dynamicSailorNetwork", height = "800px")
+                    box(
+                      width = 9,
+                      title = "Sailor Shift Influence Network",
+                      solidHeader = TRUE,
+                      visNetworkOutput("dynamicSailorNetwork", height = "800px")
+                    )
                 )
-              )
-      ))
+              ))
       ,
       
       tabItem(tabName = "sailor_influencers",
@@ -348,29 +371,119 @@ ui <- dashboardPage(
                 div(class = "custom-box-green",
                     box(
                       width = 9,
-                      title = "Sailor Influencers",
+                      title = "Sailor Shift Influence Network",
                       solidHeader = TRUE,
                       plotOutput("ggraphSailorNetwork", height = "800px")
                     )
                     
-              ))
+                ))
       )
       ,
-      tabItem(tabName = "genreTree",
-              fluidRow(
-                box(
-                  title = "Genre Treemap", width = 12, status = "primary", solidHeader = TRUE,
-                  plotlyOutput("genre_treemap_plotly", height = "750px")
-                  
+      tabItem(tabName = "oceanus",
+              tabsetPanel(
+                tabPanel("Genres Influenced by Oceanus Folk",
+                         sidebarLayout(
+                           sidebarPanel( width = 3 ,
+                                         selectizeInput(
+                                           inputId = "of_song_genre",
+                                           label = "Select Genre:",
+                                           choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
+                                           selected = "Oceanus Folk",
+                                           multiple = FALSE
+                                         )
+                           ),
+                           mainPanel(
+                             plotOutput("of_treemap", height = "700px")
+                           )
+                         )
+                ),
+                tabPanel("Top Artists Inlfuenced by Oceanus Folk",
+                         sidebarLayout(
+                           sidebarPanel(width = 3,
+                                        selectInput("source_genre", "Select Source Genre:",
+                                                    choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
+                                                    selected = "Oceanus Folk"
+                                        ),
+                                        sliderInput("top_n", "Top N Influenced Artists:", min = 10, max = 35, value = 12),
+                                        selectizeInput("influence_types", "Influence Edge Types:",
+                                                       choices = influence_types,
+                                                       selected = "LyricalReferenceTo",
+                                                       multiple = TRUE,
+                                                       options = list(placeholder = 'Select one or more edge types')
+                                                       )
+                           ),
+                           mainPanel(
+                             plotlyOutput("lollipopPlot", height = "800px")
+                           )
+                         )
+                ),
+                tabPanel("Genres Influenced Oceanus Folk",
+                         sidebarLayout(
+                           sidebarPanel(width = 3,
+                                        sliderInput("min_influence", "Minimum Influence Count:",
+                                                    min = 1, max = 10, value = 1),
+                                        numericInput("top_n_genres", "Top N Genres to Display:", value = 10, min = 1, max = 20),
+                                        selectInput("target_genre_network", "Target Genre (Node):",
+                                                    choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
+                                                    selected = "Oceanus Folk")
+                           ),
+                           mainPanel(
+                             visNetworkOutput("genre_influence_net", height = "650px")
+                           )
+                         )
                 )
-              )
-      )
-      ,
+                
+              )),
       
       tabItem(tabName = "cluster",
-              plotOutput("elbowPlot"),
-              plotlyOutput("pcaPlot"),
-              DT::dataTableOutput("clusterSummary")
+              fluidRow(
+                # Sidebar Box
+                box(title = "Clustering Panel", width = 3, status = "info",
+                    selectInput("cluster_vars", "Select Variables for Clustering:",
+                                choices = c("total_works", "notable_works", "oceanus_folk_works", 
+                                            "collaborations", "time_to_notability", "genre_diversity"),
+                                selected = c("total_works", "notable_works", "oceanus_folk_works"),
+                                multiple = TRUE),
+                    radioButtons("cluster_method", "Clustering Method:",
+                                 choices = c("K-means", "DBSCAN", "PAM"),
+                                 selected = "K-means"),
+                    conditionalPanel(
+                      condition = "input.cluster_method == 'K-means' || input.cluster_method == 'PAM'",
+                      sliderInput("n_clusters", "Number of Clusters:", 2, 8, value = 3)
+                    ),
+                    conditionalPanel(
+                      condition = "input.cluster_method == 'DBSCAN'",
+                      sliderInput("eps", "Epsilon (Neighborhood Radius):", 
+                                  min = 0.1, max = 2, value = 0.5, step = 0.1),
+                      numericInput("minPts", "Minimum Points:", value = 5, min = 2)
+                    ),
+                    actionButton("run_cluster", "Run Cluster Analysis")
+                ),
+                
+                # Main Content Box
+                box(title = "Cluster Analysis Results", width = 9, status = "success",
+                    tabsetPanel(
+                      tabPanel("Optimal Clusters",
+                               plotOutput("elbowPlot" , height = "550px")
+                      ),
+                      tabPanel("Cluster Propotion",
+                               plotlyOutput("clusterProportionPlot", height = "550px")
+                      ),
+                      tabPanel("Cluster Plot",
+                               plotlyOutput("clusterPlot", height = "550px")
+                      ),
+                      tabPanel("Cluster Characteristics", 
+                               plotlyOutput("clusterChars", height = "550px") 
+                      )
+                    )
+                )
+              ),
+              fluidRow(
+                valueBoxOutput("aic_box", width = 3),
+                valueBoxOutput("bic_box", width = 3),
+                valueBoxOutput("lr_box", width = 3),
+                valueBoxOutput("entropy_box", width = 3)
+              )
       ),
       
       tabItem(tabName = "future",
@@ -385,7 +498,6 @@ ui <- dashboardPage(
 
 # ===== Server =====
 server <- function(input, output, session) {
-  
   
   # ================= Overview Page =======================
   
@@ -928,10 +1040,10 @@ server <- function(input, output, session) {
   
   
   # ================= Influence Network Page =======================
+ 
+   ## ================= Who did Sailor influence  =======================
   
-    ## ================= Who did Sailor influence  =======================
-  
-  output$ggraphSailorNetwork <- renderPlot({
+    output$ggraphSailorNetwork <- renderPlot({
     req(input$edge_type_input)
     
     sailor_id <- nodes_tbl %>%
@@ -991,9 +1103,9 @@ server <- function(input, output, session) {
       theme(legend.position = "right")
   })
   
-    ## ==============End of Who did Sailor influence  ======================
+  ## ==============End of Who did Sailor influence  ======================
   
-    ## ================= Who influenced Sailor ======================
+  ## ================= Who influenced Sailor ======================
   
   output$dynamicSailorNetwork <- renderVisNetwork({
     req(input$influence_types_selected)
@@ -1047,13 +1159,509 @@ server <- function(input, output, session) {
       visPhysics(stabilization = TRUE)
   })
   
-    ## ================= End of Who influenced Sailor ======================
+  ## ================= End of Who influenced Sailor ======================
+  
+  
+  ## ================= Oceanus Folk Influence ======================
+  
+  ### ====== Genre influenced bu oceanus folk ==============
+  
+  output$of_treemap <- renderPlot({
+    req(input$of_song_genre)
+    
+    influence_edges <- edges_tbl %>%
+      filter(edge_type %in% influence_types)
+    
+    of_songs <- nodes_tbl %>%
+      filter(node_type == "Song", genre == input$of_song_genre)
+    
+    of_genres <- influence_edges %>%
+      filter(source %in% of_songs$id) %>%
+      left_join(nodes_tbl, by = c("target" = "id")) %>%
+      filter(node_type == "Song", !is.na(genre)) %>%
+      count(genre, sort = TRUE) %>%
+      mutate(label_text = paste0(genre, "\n(", n, ")"))
+    
+    if (nrow(of_genres) == 0) {
+      plot.new()
+      title("No influenced genres found for selected genre.")
+    } else {
+      ggplot(of_genres, aes(area = n, fill = genre, label = label_text)) +
+        geom_treemap() +
+        geom_treemap_text(color = "white", place = "center", size = 10, reflow = TRUE) +
+        labs(title = paste("Genres Influenced by", input$of_song_genre)) +
+        theme(legend.position = "none")
+    }
+  })
+  
+  ### ====== End of Genre influenced by oceanus folk ==============
+  
+  ### ====== Artisits influenced by Oceanus folk =========
+  
+  output$lollipopPlot <- renderPlotly({
+    req(input$source_genre, input$influence_types)
+    
+    # Step 1: Get songs of the selected genre
+    source_songs <- nodes_tbl %>%
+      filter(node_type == "Song", genre == input$source_genre)
+    
+    # Step 2: Get influence edges from selected edge types
+    edges_of_interest <- edges_tbl %>%
+      filter(edge_type %in% input$influence_types,
+             source %in% source_songs$id)
+    
+    # Step 3: Get influenced song IDs
+    influenced_song_ids <- edges_of_interest$target
+    
+    # Step 4: Count top artists who performed those influenced songs
+    top_artist_ids <- edges_tbl %>%
+      filter(edge_type == "PerformerOf", target %in% influenced_song_ids) %>%
+      count(source, sort = TRUE) %>%
+      arrange(desc(n), source) %>%       # enforce a stable tie-break
+      slice_head(n = input$top_n)        # strict top-N only
+    
+    
+    # Step 5: Join to get artist names
+    top_artists <- top_artist_ids %>%
+      left_join(nodes_tbl, by = c("source" = "id")) %>%
+      filter(!is.na(name)) %>%
+      rename(artist = name, count = n) %>%
+      mutate(artist = fct_reorder(artist, count))
+    
+    # Step 6: Plot lollipop
+    plot_ly(top_artists) %>%
+      add_segments(x = 0, xend = ~count,
+                   y = ~artist, yend = ~artist,
+                   line = list(color = 'gray', width = 1.5),
+                   showlegend = FALSE) %>%
+      add_markers(x = ~count, y = ~artist,
+                  marker = list(color = 'firebrick', size = 10),
+                  text = ~paste0("<b>", artist, "</b><br>Songs Influenced: ", count),
+                  hoverinfo = "text") %>%
+      layout(
+        title = list(
+          text = paste("Top", input$top_n, "Artists Influenced by", input$source_genre),
+          x = 0.5,
+          y = 0.95
+          ),
+        xaxis = list(title = "Number of Influenced Songs",
+                     showgrid = FALSE),
+        yaxis = list(title = "", tickfont = list(size = 11), automargin = TRUE,
+                     showgrid = FALSE),
+                margin = list(l = 200, t = 40),  # <-- Increase top margin here
+        height = 20 * nrow(top_artists),
+        plot_bgcolor = "#f4edf4",   # inside the chart area
+        paper_bgcolor = "#f4edf4"   # outside the chart area
+      )
+  })
+  
+  
+  ### ========= End of Artists influenced by Oceanus folk =========
+  
+  ### ======== Genres Influenced Oceanus Folk ===============
+
+  output$genre_influence_net <- renderVisNetwork({
+    req(input$min_influence, input$top_n_genres, input$target_genre_network)
+    
+    # Step 1: Get song IDs of selected target genre
+    target_songs <- nodes_tbl %>%
+      filter(node_type == "Song", genre == input$target_genre_network)
+    target_song_ids <- target_songs$id
+    
+    # Step 2: Edges going INTO that genre
+    influences_into_target <- influence_edges %>%
+      filter(target %in% target_song_ids)
+    
+    # Step 3: Get source genres
+    genre_edges <- influences_into_target %>%
+      left_join(nodes_tbl, by = c("source" = "id")) %>%
+      filter(node_type == "Song", !is.na(genre)) %>%
+      transmute(from = genre, to = input$target_genre_network)
+    
+    # Step 4: Count strength
+    genre_strength <- genre_edges %>%
+      count(from, name = "influence_count") %>%
+      filter(influence_count >= input$min_influence) %>%
+      arrange(desc(influence_count)) %>%
+      slice_head(n = input$top_n_genres)
+    
+    # Step 5: Create nodes
+    top_genres <- genre_strength$from
+    top_colors <- brewer.pal(min(length(top_genres), 9), "Blues")
+    
+    genre_nodes <- tibble(id = unique(c(top_genres, input$target_genre_network))) %>%
+      left_join(genre_strength, by = c("id" = "from")) %>%
+      mutate(
+        influence_count = replace_na(influence_count, 1),
+        label = id,
+        value = influence_count * 2,
+        color = case_when(
+          id == input$target_genre_network ~ "#FF6347",
+          TRUE ~ top_colors[match(id, top_genres)]
+        ),
+        title = paste0("<b>Genre:</b> ", id,
+                       "<br><b>Influence Count:</b> ", influence_count)
+      )
+    
+    genre_edges_filtered <- genre_edges %>%
+      filter(from %in% top_genres)
+    
+    # Step 6: visNetwork
+    visNetwork(genre_nodes, genre_edges_filtered) %>%
+      visNodes(font = list(size = 15), shadow = TRUE) %>%
+      visEdges(arrows = "to") %>%
+      visOptions(
+        highlightNearest = TRUE) %>%
+      visLegend(addNodes = list(
+        list(label = "Target Genre", shape = "dot", color = "#FF6347"),
+        list(label = "Influencing Genres", shape = "dot", color = "#3182bd")
+      ), useGroups = FALSE,
+          width = 0.4,
+          stepY = 100) %>%
+      visInteraction(navigationButtons = TRUE) %>%
+      visLayout(randomSeed = 42) %>%
+      visPhysics(stabilization = FALSE, enabled = FALSE)
+  })
+  
+  
+  
+  ### ======== End of Genres Influenced Oceanus Folk ===============
+  
+  ## ================= End of Oceanus Folk Influence ======================
   
   
   # ================= End of Influence Network Page =======================
   
+  # ================= Cluster Analysis Page =======================
+  
+  # ===== Optimized Cluster Analysis Section =====
+  
+  # Reactive values to store all cluster results
+  cluster_store <- reactiveValues(
+    results = NULL,
+    df = NULL,
+    pca_result = NULL,
+    pca_df = NULL,
+    stats = NULL,
+    last_run = NULL
+  )
+  
+  # Progress indicators
+  cluster_progress <- reactiveValues(
+    running = FALSE,
+    message = ""
+  )
+  
+  # Observe the run button and perform all calculations
+  observeEvent(input$run_cluster, {
+    req(input$cluster_vars)
+    
+    # Set progress indicators
+    cluster_progress$running <- TRUE
+    cluster_progress$message <- "Running cluster analysis..."
+    
+    tryCatch({
+      # Subset data based on selected variables
+      selected_vars <- input$cluster_vars
+      current_data <- cluster_data[, selected_vars, drop = FALSE]
+      
+      # Validate data
+      if (nrow(current_data) == 0) {
+        stop("No data available for selected variables")
+      }
+      
+      # Perform clustering with progress
+      withProgress(message = 'Performing clustering...', value = 0.3, {
+        if (input$cluster_method == "K-means") {
+          set.seed(123)
+          cluster_store$results <- kmeans(current_data, centers = input$n_clusters, nstart = 25)
+        } else if (input$cluster_method == "DBSCAN") {
+          cluster_store$results <- dbscan::dbscan(current_data, eps = input$eps, minPts = input$minPts)
+        } else {
+          cluster_store$results <- cluster::pam(current_data, k = input$n_clusters)
+        }
+      })
+      
+      # Create cluster data frame
+      withProgress(message = 'Preparing results...', value = 0.6, {
+        cluster_store$df <- current_data %>%
+          as.data.frame() %>%
+          mutate(Cluster = as.factor(cluster_store$results$cluster),
+                 person_id = as.integer(rownames(.))) %>%
+          left_join(artists_profile %>% select(person_id, name), by = "person_id")
+        
+        # Perform PCA if we have more than 1 cluster
+        if (length(unique(cluster_store$results$cluster)) > 1) {
+          cluster_store$pca_result <- prcomp(cluster_store$df[, selected_vars], scale. = FALSE)
+          
+          # Create PCA data frame
+          cluster_store$pca_df <- as.data.frame(cluster_store$pca_result$x[, 1:2])
+          cluster_store$pca_df$Cluster <- cluster_store$df$Cluster
+          cluster_store$pca_df$name <- cluster_store$df$name
+        } else {
+          cluster_store$pca_result <- NULL
+          cluster_store$pca_df <- NULL
+        }
+        
+        # Calculate model statistics (only for K-means and PAM)
+        if (input$cluster_method %in% c("K-means", "PAM")) {
+          k <- if (input$cluster_method == "K-means") input$n_clusters else cluster_store$results$nc
+          data_used <- current_data
+          n <- nrow(data_used)
+          p <- ncol(data_used)
+          
+          wss <- if (input$cluster_method == "K-means") {
+            sum(cluster_store$results$withinss)
+          } else {
+            sum(cluster_store$results$clusinfo[, "av_diss"])
+          }
+          
+          log_likelihood <- -n * p / 2 * log(wss / n)
+          aic <- -2 * log_likelihood + 2 * k * p
+          bic <- -2 * log_likelihood + log(n) * k * p
+          total_ss <- sum(scale(data_used, scale = FALSE)^2)
+          likelihood_ratio <- total_ss - wss
+          
+          cluster_sizes <- table(cluster_store$results$cluster)
+          proportions <- cluster_sizes / sum(cluster_sizes)
+          entropy <- -sum(proportions * log(proportions)) / log(length(proportions))
+          
+          cluster_store$stats <- list(
+            AIC = round(aic),
+            BIC = round(bic),
+            LikelihoodRatio = round(likelihood_ratio),
+            Entropy = round(entropy, 3)
+          )
+        } else {
+          cluster_store$stats <- NULL
+        }
+      })
+      
+      cluster_store$last_run <- Sys.time()
+      cluster_progress$message <- "Cluster analysis completed successfully"
+    }, error = function(e) {
+      cluster_progress$message <- paste("Error:", e$message)
+      showNotification(cluster_progress$message, type = "error")
+    }, finally = {
+      cluster_progress$running <- FALSE
+      removeModal()
+    })
+  })
+  
+  # Show progress UI
+  output$cluster_progress_ui <- renderUI({
+    if (cluster_progress$running) {
+      tagList(
+        div(class = "progress",
+            div(class = "progress-bar progress-bar-striped active", 
+                role = "progressbar",
+                style = "width: 100%")),
+        p(style = "text-align: center;", cluster_progress$message)
+      )
+    } else {
+      NULL
+    }
+  })
+  
+  # ===== Optimized Output Renderers =====
+  
+  # Silhouette plot - only shown for K-means and PAM
+  output$silhouettePlot <- renderPlot({
+    req(cluster_store$results, input$cluster_method %in% c("K-means", "PAM"))
+    
+    selected_vars <- input$cluster_vars
+    current_data <- cluster_data[, selected_vars, drop = FALSE]
+    
+    # Only show silhouette if we have between 2 and 10 clusters
+    n_clusters <- length(unique(cluster_store$results$cluster))
+    if (n_clusters < 2 || n_clusters > 10) {
+      plot.new()
+      text(0.5, 0.5, "Silhouette plot requires 2-10 clusters", col = "red")
+      return()
+    }
+    
+    silhouette_avg <- silhouette(as.numeric(cluster_store$results$cluster), dist(current_data))
+    fviz_silhouette(silhouette_avg) +
+      theme_minimal()
+  })
+  
+  # Elbow plot - shown immediately (doesn't require button press)
+  output$elbowPlot <- renderPlot({
+    req(input$cluster_vars)
+    
+    current_data <- cluster_data[, input$cluster_vars, drop = FALSE]
+    
+    if (input$cluster_method != "DBSCAN") {
+      fviz_nbclust(current_data, kmeans, method = "wss", k.max = min(8, nrow(current_data)-1)) +
+        labs(title = "Elbow Method for Optimal Number of Clusters") +
+        theme_minimal()
+    } else {
+      kNNdistplot(current_data, k = input$minPts)
+      abline(h = input$eps, col = "red", lty = 2)
+      title("kNN Distance Plot (Help determine eps)")
+    }
+  })
+  
+  # Cluster proportion plot
+  output$clusterProportionPlot <- renderPlotly({
+    req(cluster_store$results)
+    
+    clusters <- cluster_store$results$cluster
+    if (is.null(clusters)) {
+      return(NULL)
+    }
+    
+    prop_data <- data.frame(Cluster = factor(clusters)) %>%
+      count(Cluster) %>%
+      mutate(
+        Percentage = round(n / sum(n) * 100, 1),
+        ClusterLabel = ifelse(Cluster == 0, "Noise", paste("Cluster", Cluster)),
+        hover_text = paste0(
+          "<b>", ClusterLabel, "</b><br>",
+          "Count: ", n, "<br>",
+          "Percentage: ", Percentage, "%"
+        )
+      )
+    
+    # Limit to reasonable number of clusters for visualization
+    if (nrow(prop_data) > 10) {
+      prop_data <- prop_data %>% slice_max(n, n = 10)
+    }
+    
+    plot_ly(
+      prop_data,
+      labels = ~ClusterLabel,
+      values = ~n,
+      type = 'pie',
+      textposition = 'inside',
+      textinfo = 'percent',
+      hoverinfo = 'text',
+      text = ~hover_text,
+      marker = list(
+        colors = RColorBrewer::brewer.pal(min(nrow(prop_data), 9), "Set3"),
+        line = list(color = '#FFFFFF', width = 1)
+      ),
+      showlegend = TRUE
+    ) %>%
+      layout(
+        title = list(
+          text = "<b>Cluster Distribution</b>",
+          x = 0.5,
+          font = list(size = 14)
+        ),
+        margin = list(t = 50, b = 20, l = 20, r = 20),
+        legend = list(
+          orientation = "h",
+          y = -0.1
+        )
+      ) %>%
+      config(displayModeBar = FALSE)
+  })
+    
+    # Cluster plot
+    output$clusterPlot <- renderPlotly({
+      req(cluster_store$pca_df)
+      
+      # Limit number of points for better performance
+      plot_data <- if (nrow(cluster_store$pca_df) > 1000) {
+        cluster_store$pca_df %>% sample_n(1000)
+      } else {
+        cluster_store$pca_df
+      }
+      
+      plot_ly(
+        data = plot_data,
+        x = ~PC1, y = ~PC2,
+        type = 'scatter',
+        mode = 'markers',
+        color = ~Cluster,
+        text = ~paste("Artist:", name, "<br>Cluster:", Cluster),
+        hoverinfo = "text",
+        marker = list(size = 8, line = list(width = 1, color = 'black'))
+      ) %>%
+        layout(
+          title = "Cluster Plot (PCA Projection)",
+          xaxis = list(title = "PC1"),
+          yaxis = list(title = "PC2")
+        )
+    })
+    
+    # Cluster Characteristics
+    output$clusterChars <- renderPlotly({
+      req(cluster_store$df)
+      
+      # Limit data size for better performance
+      plot_data <- cluster_store$df
+      if (nrow(plot_data) > 1000) {
+        plot_data <- plot_data %>% sample_n(1000)
+      }
+      
+      plot_data <- plot_data %>%
+        pivot_longer(-c(Cluster, person_id, name), names_to = "Variable", values_to = "Value") %>%
+        filter(!is.na(Value))
+      
+      # Limit number of clusters shown
+      unique_clusters <- unique(plot_data$Cluster)
+      if (length(unique_clusters) > 6) {
+        plot_data <- plot_data %>% 
+          filter(Cluster %in% unique_clusters[1:6])
+      }
+      
+      p <- ggplot(plot_data, aes(x = Variable, y = Value, fill = Cluster)) +
+        geom_boxplot() +
+        facet_wrap(~ Cluster, ncol = 2) +
+        labs(title = "Cluster Characteristics by Variable",
+             x = "", y = "Standardized Value") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+      
+      ggplotly(p) %>% config(displayModeBar = FALSE)
+    })
+    
+    # ===== Optimized Value Boxes =====
+    
+    output$aic_box <- renderValueBox({
+      req(cluster_store$stats)
+      valueBox(
+        value = formatC(cluster_store$stats$AIC, format = "d", big.mark = ","),
+        subtitle = "AIC",
+        icon = icon("calculator"),
+        color = "yellow"
+      )
+    })
+    
+    output$bic_box <- renderValueBox({
+      req(cluster_store$stats)
+      valueBox(
+        value = formatC(cluster_store$stats$BIC, format = "d", big.mark = ","),
+        subtitle = "BIC",
+        icon = icon("calculator"),
+        color = "yellow"
+      )
+    })
+    
+    output$lr_box <- renderValueBox({
+      req(cluster_store$stats)
+      valueBox(
+        value = formatC(cluster_store$stats$LikelihoodRatio, format = "d", big.mark = ","),
+        subtitle = "Likelihood Ratio",
+        icon = icon("chart-line"),
+        color = "yellow"
+      )
+    })
+    
+    output$entropy_box <- renderValueBox({
+      req(cluster_store$stats)
+      valueBox(
+        value = cluster_store$stats$Entropy,
+        subtitle = "Entropy",
+        icon = icon("braille"),
+        color = "yellow"
+      )
+    })
   
   
+  # ================= End of Cluster Analysis Page =======================
   
 }
 
