@@ -296,7 +296,7 @@ ui <- dashboardPage(
                               value = c(1975, 2040),
                               step = 5, sep = ""),
                   selectizeInput("selected_artists", "Select Artist(s) up to 3:",
-                                 choices = sort(unique(artists_profile$name)),
+                                 choices = NULL,
                                  selected = c("Sailor Shift"), 
                                  multiple = TRUE,
                                  options = list(maxItems = 3)),
@@ -487,10 +487,49 @@ ui <- dashboardPage(
       ),
       
       tabItem(tabName = "future",
-              DT::dataTableOutput("futureStarsTable"),
-              plotOutput("radar1"),
-              plotOutput("radar2"),
-              plotOutput("radar3")
+              fluidRow(
+                box(title = "Prediction Methodology", width = 12, status = "info",
+                    selectInput("prediction_method", "Select Prediction Method:",
+                                choices = c("Composite Score", "Cluster Analysis", 
+                                            "Growth Trajectory", "Network Centrality"),
+                                selected = "Composite Score"),
+                    
+                    sliderInput("prediction_timeframe", "Time Frame for Prediction:",
+                                min = min(artist_works$release_date, na.rm = TRUE),
+                                max = max(artist_works$release_date, na.rm = TRUE) + 10,
+                                value = c(min(artist_works$release_date, na.rm = TRUE), 
+                                          max(artist_works$release_date, na.rm = TRUE)),
+                                step = 5, sep = ""),
+                    
+                    selectizeInput("prediction_genres", "Filter by Genre (Optional):",
+                                   choices = unique(artist_works$genre),
+                                   selected = NULL,
+                                   multiple = TRUE,
+                                   options = list(placeholder = 'All genres')),
+                    
+                    actionButton("run_prediction", "Run Prediction", 
+                                 icon = icon("chart-line"),
+                                 class = "btn-primary")
+                )
+              ),
+              
+              fluidRow(
+                box(title = "Future Stars Prediction", width = 12, status = "success",
+                    tabsetPanel(
+                      tabPanel("Prediction Table", 
+                               DT::dataTableOutput("futureStarsTable")),
+                      tabPanel("Visual Analysis", 
+                               plotOutput("futureRadarPlot")),
+                      tabPanel("Historical Comparison",
+                               plotlyOutput("historicalComparisonPlot"))
+                    )
+                )
+              ),
+              
+              fluidRow(
+                box(title = "Prediction Metrics", width = 12, status = "primary",
+                    plotlyOutput("predictionMetricsPlot"))
+              )
       )
     )
   )
@@ -743,6 +782,10 @@ server <- function(input, output, session) {
   
   
   # ================= Artists Profile Page =======================
+  
+  updateSelectizeInput(session, "selected_artists", 
+                       choices = sort(unique(artists_profile$name)),
+                       server = TRUE)
   
   # === Artists Career Timeline Plot ===
   output$careerTimelinePlot <- renderPlotly({
@@ -1377,7 +1420,7 @@ server <- function(input, output, session) {
           cluster_store$results <- kmeans(current_data, centers = input$n_clusters, nstart = 25)
         } else if (input$cluster_method == "DBSCAN") {
           cluster_store$results <- dbscan::dbscan(current_data, eps = input$eps, minPts = input$minPts)
-        } else {
+        } else if (input$cluster_method == "PAM") {
           cluster_store$results <- cluster::pam(current_data, k = input$n_clusters)
         }
       })
@@ -1467,22 +1510,26 @@ server <- function(input, output, session) {
   
   # Silhouette plot - only shown for K-means and PAM
   output$silhouettePlot <- renderPlot({
-    req(cluster_store$results, input$cluster_method %in% c("K-means", "PAM"))
+    req(cluster_store$results)
     
-    selected_vars <- input$cluster_vars
-    current_data <- cluster_data[, selected_vars, drop = FALSE]
-    
-    # Only show silhouette if we have between 2 and 10 clusters
-    n_clusters <- length(unique(cluster_store$results$cluster))
-    if (n_clusters < 2 || n_clusters > 10) {
+    if (input$cluster_method %in% c("K-means", "PAM")) {
+      selected_vars <- input$cluster_vars
+      current_data <- cluster_data[, selected_vars, drop = FALSE]
+      
+      n_clusters <- length(unique(cluster_store$results$cluster))
+      if (n_clusters < 2 || n_clusters > 10) {
+        plot.new()
+        text(0.5, 0.5, "Silhouette plot requires 2-10 clusters", col = "red")
+        return()
+      }
+      
+      silhouette_avg <- silhouette(as.numeric(cluster_store$results$cluster), dist(current_data))
+      fviz_silhouette(silhouette_avg) +
+        theme_minimal()
+    } else {
       plot.new()
-      text(0.5, 0.5, "Silhouette plot requires 2-10 clusters", col = "red")
-      return()
+      text(0.5, 0.5, "Silhouette not available for DBSCAN", col = "grey")
     }
-    
-    silhouette_avg <- silhouette(as.numeric(cluster_store$results$cluster), dist(current_data))
-    fviz_silhouette(silhouette_avg) +
-      theme_minimal()
   })
   
   # Elbow plot - shown immediately (doesn't require button press)
@@ -1557,111 +1604,489 @@ server <- function(input, output, session) {
       ) %>%
       config(displayModeBar = FALSE)
   })
+  
+  # Cluster plot
+  output$clusterPlot <- renderPlotly({
+    req(cluster_store$results, input$cluster_vars)
     
-    # Cluster plot
-    output$clusterPlot <- renderPlotly({
-      req(cluster_store$pca_df)
+    # Get data and perform PCA
+    selected_data <- cluster_data[, input$cluster_vars, drop = FALSE]
+    pca_result <- prcomp(selected_data, scale. = FALSE)
+    pca_df <- as.data.frame(pca_result$x[, 1:2])
+    
+    # Add cluster information
+    pca_df$Cluster <- as.factor(cluster_store$results$cluster)
+    pca_df$name <- artists_profile$name[as.integer(rownames(pca_df))]
+    
+    # Create convex hulls for each cluster
+    hulls <- pca_df %>%
+      group_by(Cluster) %>%
+      slice(chull(PC1, PC2))
+    
+    # Plot
+    p <- ggplot(pca_df, aes(x = PC1, y = PC2, color = Cluster)) +
+      geom_point(aes(text = paste("Artist:", name)), alpha = 0.7) +
+      geom_polygon(data = hulls, aes(fill = Cluster), alpha = 0.2) +
+      labs(title = "Cluster Visualization (PCA Projection)",
+           x = "Principal Component 1",
+           y = "Principal Component 2") +
+      theme_minimal()
+    
+    ggplotly(p, tooltip = "text") %>%
+      layout(hoverlabel = list(bgcolor = "white"))
+  })
+  
+  # Cluster Characteristics
+  output$clusterChars <- renderPlotly({
+    req(cluster_store$df)
+    
+    # Limit data size for better performance
+    plot_data <- cluster_store$df
+    if (nrow(plot_data) > 1000) {
+      plot_data <- plot_data %>% sample_n(1000)
+    }
+    
+    plot_data <- plot_data %>%
+      pivot_longer(-c(Cluster, person_id, name), names_to = "Variable", values_to = "Value") %>%
+      filter(!is.na(Value))
+    
+    # Limit number of clusters shown
+    unique_clusters <- unique(plot_data$Cluster)
+    if (length(unique_clusters) > 6) {
+      plot_data <- plot_data %>% 
+        filter(Cluster %in% unique_clusters[1:6])
+    }
+    
+    p <- ggplot(plot_data, aes(x = Variable, y = Value, fill = Cluster)) +
+      geom_boxplot() +
+      facet_wrap(~ Cluster, ncol = 2) +
+      labs(title = "Cluster Characteristics by Variable",
+           x = "", y = "Standardized Value") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    ggplotly(p) %>% config(displayModeBar = FALSE)
+  })
+  
+  # ===== Optimized Value Boxes =====
+  
+  output$aic_box <- renderValueBox({
+    req(cluster_store$stats)
+    valueBox(
+      value = formatC(cluster_store$stats$AIC, format = "d", big.mark = ","),
+      subtitle = "AIC",
+      icon = icon("calculator"),
+      color = "yellow"
+    )
+  })
+  
+  output$bic_box <- renderValueBox({
+    req(cluster_store$stats)
+    valueBox(
+      value = formatC(cluster_store$stats$BIC, format = "d", big.mark = ","),
+      subtitle = "BIC",
+      icon = icon("calculator"),
+      color = "yellow"
+    )
+  })
+  
+  output$lr_box <- renderValueBox({
+    req(cluster_store$stats)
+    valueBox(
+      value = formatC(cluster_store$stats$LikelihoodRatio, format = "d", big.mark = ","),
+      subtitle = "Likelihood Ratio",
+      icon = icon("chart-line"),
+      color = "yellow"
+    )
+  })
+  
+  output$entropy_box <- renderValueBox({
+    req(cluster_store$stats)
+    valueBox(
+      value = cluster_store$stats$Entropy,
+      subtitle = "Entropy",
+      icon = icon("braille"),
+      color = "yellow"
+    )
+  })
+  
+  # ================= End of Cluster Analysis Page =======================
+    
+  # ================= Predicition Analysis Page =======================  
+    
+    # Reactive function to filter artists by time frame
+    filtered_artists <- reactive({
+      req(input$prediction_timeframe)
       
-      # Limit number of points for better performance
-      plot_data <- if (nrow(cluster_store$pca_df) > 1000) {
-        cluster_store$pca_df %>% sample_n(1000)
+      # Get artists active in the selected time frame
+      active_artists <- artist_works %>%
+        filter(release_date >= input$prediction_timeframe[1],
+               release_date <= input$prediction_timeframe[2]) %>%
+        distinct(person_id) %>%
+        pull(person_id)
+      
+      # Filter profile to only include active artists
+      artists_profile %>%
+        filter(person_id %in% active_artists)
+    })
+    
+    # Reactive function to filter by genre if selected
+    genre_filtered_artists <- reactive({
+      req(filtered_artists())
+      
+      if (!is.null(input$prediction_genres)) {
+        # Get artists who have works in the selected genres
+        genre_artists <- artist_works %>%
+          filter(genre %in% input$prediction_genres) %>%
+          distinct(person_id) %>%
+          pull(person_id)
+        
+        filtered_artists() %>%
+          filter(person_id %in% genre_artists)
       } else {
-        cluster_store$pca_df
+        filtered_artists()
       }
+    })
+    
+    # Composite Score Prediction
+    composite_score_prediction <- reactive({
+      req(genre_filtered_artists())
       
-      plot_ly(
-        data = plot_data,
-        x = ~PC1, y = ~PC2,
-        type = 'scatter',
-        mode = 'markers',
-        color = ~Cluster,
-        text = ~paste("Artist:", name, "<br>Cluster:", Cluster),
-        hoverinfo = "text",
-        marker = list(size = 8, line = list(width = 1, color = 'black'))
-      ) %>%
-        layout(
-          title = "Cluster Plot (PCA Projection)",
-          xaxis = list(title = "PC1"),
-          yaxis = list(title = "PC2")
+      genre_filtered_artists() %>%
+        mutate(
+          productivity_score = scales::rescale(total_works, to = c(0, 10)),
+          notability_score = scales::rescale(notable_works, to = c(0, 15)),
+          genre_score = ifelse(oceanus_folk_works > 0, 5, 0),
+          collab_score = scales::rescale(collaborations, to = c(0, 10)),
+          diversity_score = scales::rescale(genre_diversity, to = c(0, 5)),
+          time_score = scales::rescale(-time_to_notability, to = c(0, 10)),
+          
+          # Composite score with optional weights in the future
+          future_star_score = round(
+            productivity_score + notability_score + genre_score +
+              collab_score + diversity_score + time_score,
+            1
+          ),
+          
+          # Prediction tier
+          prediction_tier = case_when(
+            future_star_score >= 40 ~ "High Potential",
+            future_star_score >= 30 ~ "Moderate Potential",
+            TRUE ~ "Emerging"
+          )
+        ) %>%
+        arrange(desc(future_star_score)) %>%
+        select(name, future_star_score, prediction_tier, total_works, notable_works,
+               oceanus_folk_works, collaborations, genre_diversity, time_to_notability)
+    })
+    
+    # Cluster-Based Prediction
+    cluster_prediction <- reactive({
+      req(genre_filtered_artists(), input$prediction_method == "Cluster Analysis")
+      
+      # Use precomputed cluster data
+      cluster_data <- genre_filtered_artists() %>%
+        select(total_works, notable_works, oceanus_folk_works, 
+               collaborations, time_to_notability, genre_diversity) %>%
+        na.omit() %>%
+        scale()
+      
+      # Perform clustering (k-means as default)
+      set.seed(123)
+      clusters <- kmeans(cluster_data, centers = 3, nstart = 25)
+      
+      # Identify most promising cluster (highest average metrics)
+      cluster_means <- genre_filtered_artists() %>%
+        mutate(Cluster = as.factor(clusters$cluster)) %>%
+        group_by(Cluster) %>%
+        summarise(avg_score = mean(total_works + notable_works + oceanus_folk_works)) %>%
+        arrange(desc(avg_score))
+      
+      promising_cluster <- cluster_means %>% slice(1) %>% pull(Cluster)
+      
+      # Return artists in this cluster
+      genre_filtered_artists() %>%
+        mutate(Cluster = as.factor(clusters$cluster)) %>%
+        filter(Cluster == promising_cluster) %>%
+        select(name, total_works, notable_works, oceanus_folk_works, collaborations) %>%
+        arrange(desc(notable_works))
+    })
+    
+    # Growth Trajectory Prediction
+    growth_prediction <- reactive({
+      req(genre_filtered_artists(), input$prediction_method == "Growth Trajectory")
+      
+      # Calculate year-over-year growth rates
+      growth_rates <- artist_works %>%
+        left_join(people_tbl, by = "person_id") %>%
+        filter(person_id %in% genre_filtered_artists()$person_id) %>%
+        group_by(person_id, name, year = floor(release_date/5)*5) %>%
+        summarise(works = n(), .groups = "drop") %>%
+        group_by(person_id, name) %>%
+        filter(n() >= 3) %>% # Need at least 3 periods for trend
+        do({
+          mod <- lm(works ~ year, data = .)
+          data.frame(slope = coef(mod)[["year"]],
+                     r_squared = summary(mod)$r.squared)
+        }) %>%
+        ungroup() %>%
+        filter(slope > 0) %>% # Only positive growth
+        arrange(desc(slope)) %>%
+        mutate(prediction_tier = case_when(
+          slope > quantile(slope, 0.8) ~ "High Growth Potential",
+          slope > quantile(slope, 0.5) ~ "Moderate Growth Potential",
+          TRUE ~ "Emerging"
+        ))
+      
+      # Join with profile data
+      growth_rates %>%
+        left_join(genre_filtered_artists(), by = c("person_id", "name")) %>%
+        select(name, slope, r_squared, prediction_tier, total_works, notable_works)
+    })
+    
+    # Network Centrality Prediction
+    network_prediction <- reactive({
+      req(genre_filtered_artists(), input$prediction_method == "Network Centrality")
+      
+      # Calculate network centrality measures
+      centrality <- graph %>%
+        activate(nodes) %>%
+        filter(supertype == "Individual",
+               name %in% genre_filtered_artists()$name) %>%
+        mutate(
+          degree = centrality_degree(mode = "all"),
+          betweenness = centrality_betweenness(),
+          closeness = centrality_closeness()
+        ) %>%
+        as_tibble() %>%
+        select(name, degree, betweenness, closeness) %>%
+        mutate(across(c(degree, betweenness, closeness), scales::rescale))
+      
+      # Create composite score and prediction tiers
+      centrality %>%
+        mutate(central_score = degree + betweenness + closeness) %>%
+        arrange(desc(central_score)) %>%
+        mutate(prediction_tier = case_when(
+          central_score >= quantile(central_score, 0.8) ~ "High Network Potential",
+          central_score >= quantile(central_score, 0.5) ~ "Moderate Network Potential",
+          TRUE ~ "Emerging"
+        )) %>%
+        select(name, central_score, prediction_tier, degree, betweenness, closeness)
+    })
+    
+    # Main prediction output
+    output$futureStarsTable <- DT::renderDataTable({
+      req(input$run_prediction)
+      
+      prediction_data <- switch(input$prediction_method,
+                                "Composite Score" = composite_score_prediction(),
+                                "Cluster Analysis" = cluster_prediction(),
+                                "Growth Trajectory" = growth_prediction(),
+                                "Network Centrality" = network_prediction())
+      
+      # Format for display
+      datatable(prediction_data,
+                options = list(scrollX = TRUE, pageLength = 10),
+                rownames = FALSE) %>%
+        formatStyle(
+          'prediction_tier',
+          backgroundColor = styleEqual(
+            c("High Potential", "High Growth Potential", "High Network Potential",
+              "Moderate Potential", "Moderate Growth Potential", "Moderate Network Potential",
+              "Emerging"),
+            c("#4daf4a", "#4daf4a", "#4daf4a",
+              "#377eb8", "#377eb8", "#377eb8",
+              "#e41a1c")
+          )
         )
     })
     
-    # Cluster Characteristics
-    output$clusterChars <- renderPlotly({
-      req(cluster_store$df)
+    # Radar plot for top predictions
+    output$futureRadarPlot <- renderPlot({
+      req(input$run_prediction)
       
-      # Limit data size for better performance
-      plot_data <- cluster_store$df
-      if (nrow(plot_data) > 1000) {
-        plot_data <- plot_data %>% sample_n(1000)
+      prediction_data <- switch(input$prediction_method,
+                                "Composite Score" = composite_score_prediction(),
+                                "Cluster Analysis" = cluster_prediction(),
+                                "Growth Trajectory" = growth_prediction(),
+                                "Network Centrality" = network_prediction())
+      
+      # Select top 5 artists
+      top_artists <- prediction_data %>% slice_head(n = 5)
+      
+      if (nrow(top_artists) == 0) {
+        plot.new()
+        text(0.5, 0.5, "No data available for selected filters", col = "red")
+        return()
       }
       
-      plot_data <- plot_data %>%
-        pivot_longer(-c(Cluster, person_id, name), names_to = "Variable", values_to = "Value") %>%
-        filter(!is.na(Value))
-      
-      # Limit number of clusters shown
-      unique_clusters <- unique(plot_data$Cluster)
-      if (length(unique_clusters) > 6) {
-        plot_data <- plot_data %>% 
-          filter(Cluster %in% unique_clusters[1:6])
+      # Prepare radar data based on method
+      if (input$prediction_method == "Composite Score") {
+        radar_data <- top_artists %>%
+          select(name, productivity_score, notability_score, 
+                 collab_score, diversity_score, time_score) %>%
+          column_to_rownames("name") %>%
+          rbind(rep(10, ncol(.)), rep(0, ncol(.))) %>%
+          as.data.frame()
+        
+        colors <- rainbow(nrow(top_artists))
+        radarchart(radar_data, axistype = 1,
+                   pcol = colors, plwd = 2, plty = 1,
+                   title = "Top Artists by Composite Score")
+        
+      } else if (input$prediction_method == "Cluster Analysis") {
+        radar_data <- top_artists %>%
+          select(name, total_works, notable_works, oceanus_folk_works) %>%
+          column_to_rownames("name") %>%
+          rbind(rep(max(.), ncol(.)), rep(0, ncol(.))) %>%
+          as.data.frame()
+        
+        colors <- rainbow(nrow(top_artists))
+        radarchart(radar_data, axistype = 1,
+                   pcol = colors, plwd = 2, plty = 1,
+                   title = "Top Artists by Cluster Characteristics")
+        
+      } else if (input$prediction_method == "Growth Trajectory") {
+        radar_data <- data.frame(
+          slope = scales::rescale(top_artists$slope, to = c(0, 10)),
+          r_squared = scales::rescale(top_artists$r_squared, to = c(0, 10))
+        ) %>%
+          rbind(rep(10, 2), rep(0, 2)) %>%
+          as.data.frame()
+        
+        colors <- rainbow(nrow(top_artists))
+        radarchart(radar_data, axistype = 1,
+                   pcol = colors, plwd = 2, plty = 1,
+                   title = "Top Growing Artists by Trajectory")
+        
+      } else if (input$prediction_method == "Network Centrality") {
+        radar_data <- top_artists %>%
+          select(degree, betweenness, closeness) %>%
+          rbind(rep(1, 3), rep(0, 3)) %>%
+          as.data.frame()
+        
+        colors <- rainbow(nrow(top_artists))
+        radarchart(radar_data, axistype = 1,
+                   pcol = colors, plwd = 2, plty = 1,
+                   title = "Top Artists by Network Centrality")
       }
       
-      p <- ggplot(plot_data, aes(x = Variable, y = Value, fill = Cluster)) +
-        geom_boxplot() +
-        facet_wrap(~ Cluster, ncol = 2) +
-        labs(title = "Cluster Characteristics by Variable",
-             x = "", y = "Standardized Value") +
+      legend("topright", legend = top_artists$name,
+             bty = "n", pch = 20, col = rainbow(nrow(top_artists)))
+    })
+    
+    # Historical comparison plot
+    output$historicalComparisonPlot <- renderPlotly({
+      req(input$run_prediction)
+      
+      # Get current predictions
+      current_pred <- switch(input$prediction_method,
+                             "Composite Score" = composite_score_prediction(),
+                             "Cluster Analysis" = cluster_prediction(),
+                             "Growth Trajectory" = growth_prediction(),
+                             "Network Centrality" = network_prediction())
+      
+      # Get top artists from current prediction
+      top_current <- current_pred %>% slice_head(n = 5) %>% pull(name)
+      
+      # Get historical data for these artists
+      historical_data <- artist_works %>%
+        left_join(people_tbl, by = "person_id") %>%
+        filter(name %in% top_current) %>%
+        count(name, release_date) %>%
+        complete(name, release_date = full_seq(release_date, 1), fill = list(n = 0))
+      
+      # Plot
+      ggplot(historical_data, aes(x = release_date, y = n, color = name)) +
+        geom_line() +
+        geom_point() +
+        labs(title = "Historical Work Output of Predicted Stars",
+             x = "Year", y = "Number of Works", color = "Artist") +
         theme_minimal() +
-        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+        theme(plot.title = element_text(hjust = 0.5)) %>%
+        ggplotly()
+    })
+    
+    # Prediction metrics plot
+    output$predictionMetricsPlot <- renderPlotly({
+      req(input$run_prediction)
       
-      ggplotly(p) %>% config(displayModeBar = FALSE)
+      # Get prediction data
+      pred_data <- switch(input$prediction_method,
+                          "Composite Score" = composite_score_prediction(),
+                          "Cluster Analysis" = cluster_prediction(),
+                          "Growth Trajectory" = growth_prediction(),
+                          "Network Centrality" = network_prediction())
+      
+      # Prepare metrics data
+      if (input$prediction_method == "Composite Score") {
+        metrics <- pred_data %>%
+          summarise(avg_score = mean(future_star_score),
+                    median_score = median(future_star_score),
+                    high_potential = sum(prediction_tier == "High Potential"),
+                    emerging = sum(prediction_tier == "Emerging"))
+        
+        plot_ly(metrics) %>%
+          add_trace(x = ~c("Average Score", "Median Score", "High Potential", "Emerging"),
+                    y = ~c(avg_score, median_score, high_potential, emerging),
+                    type = "bar",
+                    marker = list(color = c("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"))) %>%
+          layout(title = "Composite Score Metrics",
+                 xaxis = list(title = ""),
+                 yaxis = list(title = ""))
+        
+      } else if (input$prediction_method == "Growth Trajectory") {
+        metrics <- pred_data %>%
+          summarise(avg_growth = mean(slope),
+                    avg_r2 = mean(r_squared),
+                    high_growth = sum(prediction_tier == "High Growth Potential"),
+                    emerging = sum(prediction_tier == "Emerging"))
+        
+        plot_ly(metrics) %>%
+          add_trace(x = ~c("Avg Growth", "Avg R-squared", "High Growth", "Emerging"),
+                    y = ~c(avg_growth, avg_r2, high_growth, emerging),
+                    type = "bar",
+                    marker = list(color = c("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"))) %>%
+          layout(title = "Growth Trajectory Metrics",
+                 xaxis = list(title = ""),
+                 yaxis = list(title = ""))
+        
+      } else if (input$prediction_method == "Network Centrality") {
+        metrics <- pred_data %>%
+          summarise(avg_centrality = mean(central_score),
+                    high_network = sum(prediction_tier == "High Network Potential"),
+                    emerging = sum(prediction_tier == "Emerging"))
+        
+        plot_ly(metrics) %>%
+          add_trace(x = ~c("Avg Centrality", "High Network", "Emerging"),
+                    y = ~c(avg_centrality, high_network, emerging),
+                    type = "bar",
+                    marker = list(color = c("#1f77b4", "#2ca02c", "#d62728"))) %>%
+          layout(title = "Network Centrality Metrics",
+                 xaxis = list(title = ""),
+                 yaxis = list(title = ""))
+        
+      } else {
+        # For cluster analysis
+        metrics <- pred_data %>%
+          summarise(avg_works = mean(total_works),
+                    avg_notable = mean(notable_works),
+                    avg_of_works = mean(oceanus_folk_works))
+        
+        plot_ly(metrics) %>%
+          add_trace(x = ~c("Avg Works", "Avg Notable", "Avg OF Works"),
+                    y = ~c(avg_works, avg_notable, avg_of_works),
+                    type = "bar",
+                    marker = list(color = c("#1f77b4", "#ff7f0e", "#2ca02c"))) %>%
+          layout(title = "Cluster Characteristics Metrics",
+                 xaxis = list(title = ""),
+                 yaxis = list(title = ""))
+      }
     })
     
-    # ===== Optimized Value Boxes =====
     
-    output$aic_box <- renderValueBox({
-      req(cluster_store$stats)
-      valueBox(
-        value = formatC(cluster_store$stats$AIC, format = "d", big.mark = ","),
-        subtitle = "AIC",
-        icon = icon("calculator"),
-        color = "yellow"
-      )
-    })
     
-    output$bic_box <- renderValueBox({
-      req(cluster_store$stats)
-      valueBox(
-        value = formatC(cluster_store$stats$BIC, format = "d", big.mark = ","),
-        subtitle = "BIC",
-        icon = icon("calculator"),
-        color = "yellow"
-      )
-    })
-    
-    output$lr_box <- renderValueBox({
-      req(cluster_store$stats)
-      valueBox(
-        value = formatC(cluster_store$stats$LikelihoodRatio, format = "d", big.mark = ","),
-        subtitle = "Likelihood Ratio",
-        icon = icon("chart-line"),
-        color = "yellow"
-      )
-    })
-    
-    output$entropy_box <- renderValueBox({
-      req(cluster_store$stats)
-      valueBox(
-        value = cluster_store$stats$Entropy,
-        subtitle = "Entropy",
-        icon = icon("braille"),
-        color = "yellow"
-      )
-    })
-  
-  
-  # ================= End of Cluster Analysis Page =======================
+  # ================= End of Predicition Analysis Page =======================
   
 }
 
