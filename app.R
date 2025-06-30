@@ -381,6 +381,26 @@ ui <- dashboardPage(
       ,
       tabItem(tabName = "oceanus",
               tabsetPanel(
+                tabPanel("Influence Over Time",
+                         fluidRow(
+                           box(
+                             width = 3,
+                             class = "custom-box-green",
+                             title = "Select Genre",
+                             solidHeader = TRUE,
+                             selectInput("selected_timeline_genre", "Select Genre:",
+                                         choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
+                                         selected = "Oceanus Folk")
+                           ),
+                           box(
+                             width = 9,
+                             class = "custom-box-green",
+                             title = "Temporal Spread of Influence",
+                             solidHeader = TRUE,
+                             plotlyOutput("oceanus_timeline", height = "500px")
+                           )
+                         )
+                ),
                 
                 tabPanel("Genres Influenced by Oceanus Folk",
                          fluidRow(
@@ -455,31 +475,9 @@ ui <- dashboardPage(
                              visNetworkOutput("genre_influence_net", height = "650px")
                            )
                          )
-                ),
-                
-                tabPanel("Influence Over Time",
-                         fluidRow(
-                           box(
-                             width = 3,
-                             class = "custom-box-green",
-                             title = "Select Genre",
-                             solidHeader = TRUE,
-                             selectInput("selected_timeline_genre", "Select Genre:",
-                                         choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
-                                         selected = "Oceanus Folk")
-                           ),
-                           box(
-                             width = 9,
-                             class = "custom-box-green",
-                             title = "Temporal Spread of Influence",
-                             solidHeader = TRUE,
-                             plotlyOutput("oceanus_timeline", height = "500px")
-                           )
-                         )
                 )
                 
-              )
-      )
+              )      )
       
       ,
       
