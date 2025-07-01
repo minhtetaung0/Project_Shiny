@@ -373,7 +373,7 @@ ui <- dashboardPage(
                       width = 9,
                       title = "Sailor Shift Influence Network",
                       solidHeader = TRUE,
-                      plotOutput("ggraphSailorNetwork", height = "800px")
+                      visNetworkOutput("ggraphSailorNetwork", height = "800px")
                     )
                     
                 ))
@@ -1130,9 +1130,9 @@ server <- function(input, output, session) {
   
   # ================= Influence Network Page =======================
   
-  ## ================= Who did Sailor influence  =======================
+  ## ================= Who influenced Sailor =======================
   
-  output$ggraphSailorNetwork <- renderPlot({
+  output$ggraphSailorNetwork <- renderVisNetwork({
     req(input$edge_type_input)
     
     sailor_id <- nodes_tbl %>%
@@ -1140,61 +1140,68 @@ server <- function(input, output, session) {
       pull(id)
     
     sailor_in_edges <- edges_tbl %>%
-      filter(edge_type %in% input$influence_types_selected,
-             target == sailor_id)
+      filter(edge_type %in% input$edge_type_input, target == sailor_id)
     
     all_ids <- unique(c(sailor_in_edges$source, sailor_in_edges$target))
     
+    # Build vis nodes
     vis_nodes <- nodes_tbl %>%
-      filter(id %in% all_ids,
-             node_type %in% c("Person", "MusicalGroup", "RecordLabel")) %>%
+      filter(id %in% all_ids) %>%
       mutate(
         label = name,
-        group = ifelse(id == sailor_id, "Sailor Shift", node_type)
+        group = node_type,
+        color = case_when(
+          id == sailor_id ~ "darkblue",
+          node_type == "Person" ~ "#91c788",
+          node_type == "MusicalGroup" ~ "#f48c8c",
+          node_type == "RecordLabel" ~ "#70d6ff",
+          TRUE ~ "#cccccc"
+        ),
+        title = paste0("<b>", name, "</b><br>Type: ", node_type)
       ) %>%
-      select(id, label, group)
+      select(id, label, group, color, title)
     
-    vis_nodes <- vis_nodes %>%
-      mutate(row_id = row_number())
-    id_map <- vis_nodes %>% select(id, row_id)
-    
+    # Build vis edges
     vis_edges <- sailor_in_edges %>%
-      left_join(id_map, by = c("source" = "id")) %>%
-      rename(from = row_id) %>%
-      left_join(id_map, by = c("target" = "id")) %>%
-      rename(to = row_id) %>%
-      select(from, to, label = edge_type)
+      select(from = source, to = target, edge_type) %>%
+      mutate(
+        arrows = "to",
+        label = edge_type,
+        color = "#848484",       # ✅ just use a flat column
+        font.size = 12,          # ✅ use column naming convention for visNetwork
+        font.align = "middle",   # ✅ flat attributes
+        smooth = TRUE
+      )
     
-    if (nrow(vis_nodes) == 0 || nrow(vis_edges) == 0) {
-      plot.new()
-      text(0.5, 0.5, "No data available for selected filters.", col = "red", cex = 1.5)
-      return()
-    }
     
-    graph_tidy <- tbl_graph(
-      nodes = vis_nodes %>% arrange(row_id) %>% select(label, group),
-      edges = vis_edges,
-      directed = TRUE
-    )
     
-    ggraph(graph_tidy, layout = "fr") +
-      geom_edge_link(aes(label = label),
-                     arrow = arrow(length = unit(3, 'mm')),
-                     end_cap = circle(3, 'mm'),
-                     label_size = 4,
-                     label_colour = "gray40",
-                     angle_calc = "along",
-                     label_dodge = unit(2.5, 'mm'),
-                     show.legend = FALSE) +
-      geom_node_point(aes(color = group), size = 14) +
-      geom_node_text(aes(label = label), repel = TRUE, size = 6) +
-      theme_void() +
-      theme(legend.position = "right")
+    visNetwork(vis_nodes, vis_edges, height = "800px", width = "100%") %>%
+      visOptions(
+        highlightNearest = list(enabled = TRUE, degree = 1),
+        nodesIdSelection = TRUE
+      ) %>%
+      visInteraction(
+        dragView = TRUE,
+        zoomView = TRUE,
+        navigationButtons = TRUE
+      ) %>%
+      visGroups(groupname = "MusicalGroup", color = "#f48c8c") %>%
+      visGroups(groupname = "Person", color = "#91c788") %>%
+      visGroups(groupname = "RecordLabel", color = "#70d6ff") %>%
+      visGroups(groupname = "Sailor Shift", color = "darkblue") %>%
+      visLegend(useGroups = TRUE, position = "right", main = "Node Type") %>%
+      visPhysics(
+        solver = "forceAtlas2Based",
+        forceAtlas2Based = list(gravitationalConstant = -60),  # more spacing
+        stabilization = TRUE
+      ) %>%
+      visLayout(randomSeed = 42, improvedLayout = TRUE)
   })
   
-  ## ==============End of Who did Sailor influence  ======================
   
-  ## ================= Who influenced Sailor ======================
+  ## ==============End of Who influenced Sailor  ======================
+  
+  ## ================= Who Sailor influenced======================
   
   output$dynamicSailorNetwork <- renderVisNetwork({
     req(input$influence_types_selected)
@@ -1248,8 +1255,7 @@ server <- function(input, output, session) {
       visPhysics(stabilization = TRUE)
   })
   
-  ## ================= End of Who influenced Sailor ======================
-  
+  ## ================= End of Who Sailor influenced ======================
   
   ## ================= Oceanus Folk Influence ======================
   
