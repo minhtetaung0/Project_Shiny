@@ -22,7 +22,7 @@ library(cluster)
 library(NbClust)
 library(dbscan)
 library(RColorBrewer)
-
+library(fmsb)
 
 # ===== Data Preprocessing =====
 data_path <- "data/MC1_graph.json"
@@ -2084,15 +2084,18 @@ server <- function(input, output, session) {
         complete(name, release_date = full_seq(release_date, 1), fill = list(n = 0))
       
       # Plot
-      ggplot(historical_data, aes(x = release_date, y = n, color = name)) +
-        geom_line() +
-        geom_point() +
-        labs(title = "Historical Work Output of Predicted Stars",
-             x = "Year", y = "Number of Works", color = "Artist") +
-        theme_minimal() +
-        theme(plot.title = element_text(hjust = 0.5)) %>%
-        ggplotly()
-    })
+      ggplotly(
+        ggplot(historical_data, aes(x = release_date, y = n, color = name)) +
+          geom_line() +
+          geom_point() +
+          labs(
+            title = "Historical Work Output of Predicted Stars",
+            x = "Year", y = "Number of Works", color = "Artist"
+          ) +
+          theme_minimal() +
+          theme(plot.title = element_text(hjust = 0.5))
+      )
+      })
     
     # Prediction metrics plot
     output$predictionMetricsPlot <- renderPlotly({
