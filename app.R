@@ -21,7 +21,7 @@ library(treemapify)
 library(cluster)
 library(NbClust)
 library(RColorBrewer)
-
+library(fmsb)
 
 # ===== Data Preprocessing =====
 data_path <- "data/MC1_graph.json"
@@ -374,7 +374,7 @@ ui <- dashboardPage(
                       width = 9,
                       title = "Sailor Shift Influence Network",
                       solidHeader = TRUE,
-                      plotOutput("ggraphSailorNetwork", height = "800px")
+                      visNetworkOutput("ggraphSailorNetwork", height = "800px")
                     )
                     
                 ))
@@ -382,59 +382,105 @@ ui <- dashboardPage(
       ,
       tabItem(tabName = "oceanus",
               tabsetPanel(
-                tabPanel("Genres Influenced by Oceanus Folk",
-                         sidebarLayout(
-                           sidebarPanel( width = 3 ,
-                                         selectizeInput(
-                                           inputId = "of_song_genre",
-                                           label = "Select Genre:",
-                                           choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
-                                           selected = "Oceanus Folk",
-                                           multiple = FALSE
-                                         )
+                tabPanel("Influence Over Time",
+                         fluidRow(
+                           box(
+                             width = 3,
+                             class = "custom-box-green",
+                             title = "Select Genre",
+                             solidHeader = TRUE,
+                             selectInput("selected_timeline_genre", "Select Genre:",
+                                         choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
+                                         selected = "Oceanus Folk")
                            ),
-                           mainPanel(
+                           box(
+                             width = 9,
+                             class = "custom-box-green",
+                             title = "Temporal Spread of Influence",
+                             solidHeader = TRUE,
+                             plotlyOutput("oceanus_timeline", height = "500px")
+                           )
+                         )
+                ),
+                
+                tabPanel("Genres Influenced by Oceanus Folk",
+                         fluidRow(
+                           box(
+                             width = 3,
+                             class = "custom-box-green",
+                             title = "Filter Options",
+                             solidHeader = TRUE,
+                             selectizeInput(
+                               inputId = "of_song_genre",
+                               label = "Select Genre:",
+                               choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
+                               selected = "Oceanus Folk",
+                               multiple = FALSE
+                             )
+                           ),
+                           box(
+                             width = 9,
+                             class = "custom-box-green",
+                             solidHeader = TRUE,
                              plotOutput("of_treemap", height = "700px")
                            )
                          )
                 ),
+                
                 tabPanel("Top Artists Inlfuenced by Oceanus Folk",
-                         sidebarLayout(
-                           sidebarPanel(width = 3,
-                                        selectInput("source_genre", "Select Source Genre:",
-                                                    choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
-                                                    selected = "Oceanus Folk"
-                                        ),
-                                        sliderInput("top_n", "Top N Influenced Artists:", min = 10, max = 35, value = 12),
-                                        selectizeInput("influence_types", "Influence Edge Types:",
-                                                       choices = influence_types,
-                                                       selected = "LyricalReferenceTo",
-                                                       multiple = TRUE,
-                                                       options = list(placeholder = 'Select one or more edge types')
-                                                       )
+                         fluidRow(
+                           box(
+                             width = 3,
+                             class = "custom-box-green",
+                             title = "Filter Options",
+                             solidHeader = TRUE,
+                             selectInput("source_genre", "Select Source Genre:",
+                                         choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
+                                         selected = "Oceanus Folk"),
+                             sliderInput("top_n", "Top N Influenced Artists:", min = 10, max = 35, value = 12),
+                             selectizeInput("influence_types", "Influence Edge Types:",
+                                            choices = influence_types,
+                                            selected = "LyricalReferenceTo",
+                                            multiple = TRUE,
+                                            options = list(placeholder = 'Select one or more edge types'))
                            ),
-                           mainPanel(
+                           box(
+                             width = 9,
+                             class = "custom-box-green",
+                             solidHeader = TRUE,
                              plotlyOutput("lollipopPlot", height = "800px")
                            )
                          )
                 ),
+                
                 tabPanel("Genres Influenced Oceanus Folk",
-                         sidebarLayout(
-                           sidebarPanel(width = 3,
-                                        sliderInput("min_influence", "Minimum Influence Count:",
-                                                    min = 1, max = 10, value = 1),
-                                        numericInput("top_n_genres", "Top N Genres to Display:", value = 10, min = 1, max = 20),
-                                        selectInput("target_genre_network", "Target Genre (Node):",
-                                                    choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
-                                                    selected = "Oceanus Folk")
+                         fluidRow(
+                           box(
+                             width = 3,
+                             class = "custom-box-green",
+                             title = "Filter Options",
+                             solidHeader = TRUE,
+                             sliderInput("min_influence", "Minimum Influence Count:",
+                                         min = 1, max = 10, value = 1),
+                             numericInput("top_n_genres", "Top N Genres to Display:",
+                                          value = 20, min = 1, max = 20),
+                             selectInput("target_genre_network", "Target Genre (Node):",
+                                         choices = sort(unique(nodes_tbl$genre[nodes_tbl$node_type == "Song"])),
+                                         selected = "Oceanus Folk")
                            ),
-                           mainPanel(
+                           box(
+                             width = 9,
+                             class = "custom-box-green",
+                             title = "Genre-to-Genre Influence Network",
+                             solidHeader = TRUE,
                              visNetworkOutput("genre_influence_net", height = "650px")
                            )
                          )
                 )
                 
-              )),
+              )      )
+      
+      ,
       
       tabItem(tabName = "cluster",
               fluidRow(
@@ -1139,10 +1185,10 @@ server <- function(input, output, session) {
   
   
   # ================= Influence Network Page =======================
- 
-   ## ================= Who did Sailor influence  =======================
   
-    output$ggraphSailorNetwork <- renderPlot({
+  ## ================= Who influenced Sailor =======================
+  
+  output$ggraphSailorNetwork <- renderVisNetwork({
     req(input$edge_type_input)
     
     sailor_id <- nodes_tbl %>%
@@ -1150,61 +1196,68 @@ server <- function(input, output, session) {
       pull(id)
     
     sailor_in_edges <- edges_tbl %>%
-      filter(edge_type %in% input$influence_types_selected,
-             target == sailor_id)
+      filter(edge_type %in% input$edge_type_input, target == sailor_id)
     
     all_ids <- unique(c(sailor_in_edges$source, sailor_in_edges$target))
     
+    # Build vis nodes
     vis_nodes <- nodes_tbl %>%
-      filter(id %in% all_ids,
-             node_type %in% c("Person", "MusicalGroup", "RecordLabel")) %>%
+      filter(id %in% all_ids) %>%
       mutate(
         label = name,
-        group = ifelse(id == sailor_id, "Sailor Shift", node_type)
+        group = node_type,
+        color = case_when(
+          id == sailor_id ~ "darkblue",
+          node_type == "Person" ~ "#91c788",
+          node_type == "MusicalGroup" ~ "#f48c8c",
+          node_type == "RecordLabel" ~ "#70d6ff",
+          TRUE ~ "#cccccc"
+        ),
+        title = paste0("<b>", name, "</b><br>Type: ", node_type)
       ) %>%
-      select(id, label, group)
+      select(id, label, group, color, title)
     
-    vis_nodes <- vis_nodes %>%
-      mutate(row_id = row_number())
-    id_map <- vis_nodes %>% select(id, row_id)
-    
+    # Build vis edges
     vis_edges <- sailor_in_edges %>%
-      left_join(id_map, by = c("source" = "id")) %>%
-      rename(from = row_id) %>%
-      left_join(id_map, by = c("target" = "id")) %>%
-      rename(to = row_id) %>%
-      select(from, to, label = edge_type)
+      select(from = source, to = target, edge_type) %>%
+      mutate(
+        arrows = "to",
+        label = edge_type,
+        color = "#848484",       # ✅ just use a flat column
+        font.size = 12,          # ✅ use column naming convention for visNetwork
+        font.align = "middle",   # ✅ flat attributes
+        smooth = TRUE
+      )
     
-    if (nrow(vis_nodes) == 0 || nrow(vis_edges) == 0) {
-      plot.new()
-      text(0.5, 0.5, "No data available for selected filters.", col = "red", cex = 1.5)
-      return()
-    }
     
-    graph_tidy <- tbl_graph(
-      nodes = vis_nodes %>% arrange(row_id) %>% select(label, group),
-      edges = vis_edges,
-      directed = TRUE
-    )
     
-    ggraph(graph_tidy, layout = "fr") +
-      geom_edge_link(aes(label = label),
-                     arrow = arrow(length = unit(3, 'mm')),
-                     end_cap = circle(3, 'mm'),
-                     label_size = 4,
-                     label_colour = "gray40",
-                     angle_calc = "along",
-                     label_dodge = unit(2.5, 'mm'),
-                     show.legend = FALSE) +
-      geom_node_point(aes(color = group), size = 14) +
-      geom_node_text(aes(label = label), repel = TRUE, size = 6) +
-      theme_void() +
-      theme(legend.position = "right")
+    visNetwork(vis_nodes, vis_edges, height = "800px", width = "100%") %>%
+      visOptions(
+        highlightNearest = list(enabled = TRUE, degree = 1),
+        nodesIdSelection = TRUE
+      ) %>%
+      visInteraction(
+        dragView = TRUE,
+        zoomView = TRUE,
+        navigationButtons = TRUE
+      ) %>%
+      visGroups(groupname = "MusicalGroup", color = "#f48c8c") %>%
+      visGroups(groupname = "Person", color = "#91c788") %>%
+      visGroups(groupname = "RecordLabel", color = "#70d6ff") %>%
+      visGroups(groupname = "Sailor Shift", color = "darkblue") %>%
+      visLegend(useGroups = TRUE, position = "right", main = "Node Type") %>%
+      visPhysics(
+        solver = "forceAtlas2Based",
+        forceAtlas2Based = list(gravitationalConstant = -60),  # more spacing
+        stabilization = TRUE
+      ) %>%
+      visLayout(randomSeed = 42, improvedLayout = TRUE)
   })
   
-  ## ==============End of Who did Sailor influence  ======================
   
-  ## ================= Who influenced Sailor ======================
+  ## ==============End of Who influenced Sailor  ======================
+  
+  ## ================= Who Sailor influenced======================
   
   output$dynamicSailorNetwork <- renderVisNetwork({
     req(input$influence_types_selected)
@@ -1258,12 +1311,46 @@ server <- function(input, output, session) {
       visPhysics(stabilization = TRUE)
   })
   
-  ## ================= End of Who influenced Sailor ======================
-  
+  ## ================= End of Who Sailor influenced ======================
   
   ## ================= Oceanus Folk Influence ======================
   
-  ### ====== Genre influenced bu oceanus folk ==============
+  ### ============ Oceanus Folk timeline =============
+  
+  output$oceanus_timeline <- renderPlotly({
+    req(input$selected_timeline_genre)
+    
+    of_songs <- nodes_tbl %>%
+      filter(node_type == "Song", genre == input$selected_timeline_genre)
+    
+    influence_over_time <- influence_edges %>%
+      filter(source %in% of_songs$id) %>%
+      left_join(nodes_tbl, by = c("target" = "id")) %>%
+      filter(!is.na(release_date)) %>%
+      count(release_date) %>%
+      mutate(release_year = as.integer(release_date)) %>%
+      arrange(release_year)
+    
+    plot_ly(influence_over_time,
+            x = ~release_year,
+            y = ~n,
+            type = 'scatter',
+            mode = 'lines+markers',
+            line = list(color = 'steelblue'),
+            marker = list(size = 6, color = 'black'),
+            text = ~paste("Year:", release_year, "<br>Influenced Songs:", n),
+            hoverinfo = 'text') %>%
+      layout(title = paste("Influence of", input$selected_timeline_genre, "Over Time"),
+             xaxis = list(title = "Release Year"),
+             yaxis = list(title = "Number of Influenced Songs"),
+             hoverlabel = list(bgcolor = "white"),
+             dragmode = "zoom")
+  })
+  
+  
+  ### =========== End of Oceanus Folk timeline=============
+  
+  ### ====== Genre influenced by oceanus folk ==============
   
   output$of_treemap <- renderPlot({
     req(input$of_song_genre)
@@ -1342,12 +1429,12 @@ server <- function(input, output, session) {
           text = paste("Top", input$top_n, "Artists Influenced by", input$source_genre),
           x = 0.5,
           y = 0.95
-          ),
+        ),
         xaxis = list(title = "Number of Influenced Songs",
                      showgrid = FALSE),
         yaxis = list(title = "", tickfont = list(size = 11), automargin = TRUE,
                      showgrid = FALSE),
-                margin = list(l = 200, t = 40),  # <-- Increase top margin here
+        margin = list(l = 200, t = 40),  # <-- Increase top margin here
         height = 20 * nrow(top_artists),
         plot_bgcolor = "#f4edf4",   # inside the chart area
         paper_bgcolor = "#f4edf4"   # outside the chart area
@@ -1358,7 +1445,7 @@ server <- function(input, output, session) {
   ### ========= End of Artists influenced by Oceanus folk =========
   
   ### ======== Genres Influenced Oceanus Folk ===============
-
+  
   output$genre_influence_net <- renderVisNetwork({
     req(input$min_influence, input$top_n_genres, input$target_genre_network)
     
@@ -1415,8 +1502,8 @@ server <- function(input, output, session) {
         list(label = "Target Genre", shape = "dot", color = "#FF6347"),
         list(label = "Influencing Genres", shape = "dot", color = "#3182bd")
       ), useGroups = FALSE,
-          width = 0.4,
-          stepY = 100) %>%
+      width = 0.4,
+      stepY = 100) %>%
       visInteraction(navigationButtons = TRUE) %>%
       visLayout(randomSeed = 42) %>%
       visPhysics(stabilization = FALSE, enabled = FALSE)
@@ -2112,6 +2199,40 @@ server <- function(input, output, session) {
     req(input$run_future_prediction)
     
     prediction_data <- composite_score_prediction()
+    # Historical comparison plot
+    output$historicalComparisonPlot <- renderPlotly({
+      req(input$run_prediction)
+      
+      # Get current predictions
+      current_pred <- switch(input$prediction_method,
+                             "Composite Score" = composite_score_prediction(),
+                             "Cluster Analysis" = cluster_prediction(),
+                             "Growth Trajectory" = growth_prediction(),
+                             "Network Centrality" = network_prediction())
+      
+      # Get top artists from current prediction
+      top_current <- current_pred %>% slice_head(n = 5) %>% pull(name)
+      
+      # Get historical data for these artists
+      historical_data <- artist_works %>%
+        left_join(people_tbl, by = "person_id") %>%
+        filter(name %in% top_current) %>%
+        count(name, release_date) %>%
+        complete(name, release_date = full_seq(release_date, 1), fill = list(n = 0))
+      
+      # Plot
+      ggplotly(
+        ggplot(historical_data, aes(x = release_date, y = n, color = name)) +
+          geom_line() +
+          geom_point() +
+          labs(
+            title = "Historical Work Output of Predicted Stars",
+            x = "Year", y = "Number of Works", color = "Artist"
+          ) +
+          theme_minimal() +
+          theme(plot.title = element_text(hjust = 0.5))
+      )
+      })
     
     if (nrow(prediction_data) == 0) {
       plot.new()
