@@ -5,15 +5,7 @@ account: vaa-project-group13
 server: shinyapps.io
 hostUrl: https://api.shinyapps.io/v1
 appId: 14982482
-<<<<<<< HEAD
-<<<<<<< HEAD
-bundleId: 10528758
-=======
-bundleId: 10537338
->>>>>>> 6ae4a9a724c8947c166ff77ec95c8e31635e7a0f
-=======
-bundleId: 10552847
->>>>>>> f7de53467d55e7ba6f85058397c3df45adbea0dc
+bundleId: 10554619
 url: https://vaa-project-group13.shinyapps.io/Project_Shiny/
 version: 1
 asMultiple: FALSE
