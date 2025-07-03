@@ -565,6 +565,10 @@ ui <- dashboardPage(
                       numericInput("top_n_predictions", "Top N Artists to Show (Radar & Table):", 
                                  value = 3, min = 1, max = 9)
                       ),
+                    conditionalPanel(
+                      condition = "input.prediction_method == 'Network Centrality'",
+                      sliderInput("top_n_network", "Number of Top Artists to Show:", min = 1, max = 6, value = 3)
+                    ),
                     actionButton("run_future_prediction", "Run Future Prediction", 
                                  icon = icon("chart-line"),
                                  class = "btn-primary")
@@ -595,7 +599,7 @@ ui <- dashboardPage(
                                ),
                                conditionalPanel(
                                  condition = "input.prediction_method == 'Network Centrality'",
-                                 visNetworkOutput("futureNetworkPlot", height = "600px")
+                                 uiOutput("futureNetworkPlot", height = "600px")
                                )
                                )
                     )
@@ -2437,14 +2441,29 @@ server <- function(input, output, session) {
                     type = "box") %>%
         layout(title = "Centrality Distribution by Tier")
       
-      # Scatter plot: Centrality vs Collaborations
-      p2 <- plot_ly(data,
-                    x = ~central_score,
-                    y = ~collaborations,
-                    color = ~prediction_tier,
-                    text = ~paste("Artist:", name),
-                    type = "scatter") %>%
-        layout(title = "Centrality vs Collaborations")
+      # ANOVA-style plot: Collaborations by Tier (mean ± SD)
+      p2 <- data %>%
+        group_by(prediction_tier) %>%
+        summarise(
+          mean_collab = mean(collaborations, na.rm = TRUE),
+          sd_collab = sd(collaborations, na.rm = TRUE),
+          n = n()
+        ) %>%
+        mutate(
+          se = sd_collab / sqrt(n)
+        ) %>%
+        plot_ly(
+          x = ~prediction_tier,
+          y = ~mean_collab,
+          type = "bar",
+          error_y = list(type = "data", array = ~sd_collab, visible = TRUE),
+          name = "Mean Collaborations"
+        ) %>%
+        layout(
+          title = "Mean Collaborations by Prediction Tier (± SD)",
+          yaxis = list(title = "Mean Collaborations"),
+          xaxis = list(title = "Prediction Tier")
+        )
       
       subplot(p1, p2, nrows = 2)
     }
@@ -2452,112 +2471,81 @@ server <- function(input, output, session) {
   })
   
   
-  output$futureNetworkPlot <- renderVisNetwork({
+  output$futureNetworkPlot <- renderUI({
     req(input$prediction_method == "Network Centrality")
+    req(input$top_n_network)
     
-    tryCatch({
-      # Get prediction data
-      top_artists_data <- network_prediction() %>%
-        arrange(desc(central_score)) %>%
-        slice_head(n = 20) %>%
-        filter(!is.na(id))
-      
-      if (nrow(top_artists_data) == 0) {
-        return(visNetwork(
-          nodes = data.frame(id = 1, label = "No artists meet the criteria"),
-          edges = data.frame(from = numeric(), to = numeric())
-        ))
-      }
-      
-      # Get top artist IDs (using the original IDs from nodes_tbl)
-      top_ids <- top_artists_data$id
-      
-      # Create a mapping between original IDs and index numbers
-      id_mapping <- nodes_tbl %>%
-        select(id, index) %>%
-        distinct()
-      
-      # Get neighbors (1-hop) using the graph object
-      neighbor_ids <- graph %>%
-        activate(nodes) %>%
-        filter(id %in% top_ids) %>%
-        convert(to_local_neighborhood, order = 1, mode = "all") %>%
-        pull(id) %>%
-        unique()
-      
-      # Combine all relevant nodes
-      all_ids <- unique(c(top_ids, neighbor_ids))
-      
-      # Prepare nodes data
-      vis_nodes <- nodes_tbl %>%
-        filter(id %in% all_ids) %>%
-        mutate(
-          id = as.character(id),  # Convert to character for visNetwork
-          label = ifelse(is.na(name), paste0("Unknown_", id), name),
-          title = ifelse(
-            id %in% as.character(top_ids),
-            paste0("<b>", label, "</b><br>",
-                   "Centrality: ", round(top_artists_data$central_score[match(id, top_ids)], 1), "<br>",
-                   "Works: ", top_artists_data$total_works[match(id, top_ids)]),
-            label
-          ),
-          group = ifelse(id %in% as.character(top_ids), "Top Artist", "Neighbor"),
-          value = ifelse(id %in% as.character(top_ids), 5, 1),  # Size difference
-          color.background = ifelse(id %in% as.character(top_ids), "#FF7F00", "#1F78B4"),
-          color.border = "black",
-          borderWidth = ifelse(id %in% as.character(top_ids), 2, 1),
-          font.size = ifelse(id %in% as.character(top_ids), 16, 12)
+    n_display <- min(input$top_n_network, 6)
+    
+    top_artists <- network_prediction() %>%
+      inner_join(nodes_tbl %>% filter(supertype == "Individual") %>% select(id, name), by = "id") %>%
+      arrange(desc(central_score)) %>%
+      slice_head(n = n_display)
+    
+    if (nrow(top_artists) == 0) {
+      return(h4("No individual artists available for ego networks."))
+    }
+    
+    tagList(
+      lapply(seq_len(nrow(top_artists)), function(i) {
+        artist_id <- top_artists$id[i]
+        artist_name <- top_artists$name[i]
+        output_id <- paste0("egoGraph_", i)
+        
+        output[[output_id]] <- renderVisNetwork({
+          # --- Use tidygraph operations for ego filtering ---
+          ego_subgraph <- graph %>%
+            activate(nodes) %>%
+            filter(node_is_adjacent(which(nodes_tbl$id == artist_id)) | id == artist_id)
+          
+          # --- Prepare nodes data ---
+          nodes_data <- ego_subgraph %>%
+            activate(nodes) %>%
+            as_tibble() %>%
+            mutate(
+              id = id,  # already valid
+              label = ifelse(!is.na(name), name, node_type),
+              group = node_type,
+              color = ifelse(id == artist_id, "gold", "#8FBC8F"),
+              title = paste0("<b>", label, "</b><br>Type: ", node_type)
+            ) %>%
+            select(id, label, group, title, color)
+          
+          # --- Prepare edges data ---
+          edges_data <- ego_subgraph %>%
+            activate(edges) %>%
+            as_tibble() %>%
+            mutate(
+              from = as.integer(from),
+              to = as.integer(to),
+              label = edge_type,
+              title = paste("Edge Type:", edge_type)
+            ) %>%
+            select(from, to, label, title)
+          
+          visNetwork(nodes_data, edges_data, height = "500px", width = "100%") %>%
+            visOptions(
+              highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
+              nodesIdSelection = TRUE
+            ) %>%
+            visInteraction(navigationButtons = TRUE) %>%
+            visLayout(randomSeed = 42) %>%
+            visLegend(
+              useGroups = TRUE,
+              position = "right",
+              main = "Node Type"
+            )
+        })
+        
+        tagList(
+          h4(paste0("Ego Network: ", artist_name)),
+          visNetworkOutput(output_id, height = "500px"),
+          tags$hr()
         )
-      
-      # Prepare edges data
-      vis_edges <- edges_tbl_mapped %>%
-        left_join(id_mapping, by = c("from" = "index")) %>%
-        left_join(id_mapping, by = c("to" = "index")) %>%
-        filter(id.x %in% all_ids & id.y %in% all_ids) %>%
-        select(from = id.x, to = id.y) %>%
-        mutate(
-          from = as.character(from),
-          to = as.character(to)
-        )
-      
-      # Create visualization
-      visNetwork(vis_nodes, vis_edges) %>%
-        visOptions(
-          highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE),
-          nodesIdSelection = TRUE
-        ) %>%
-        visPhysics(
-          solver = "forceAtlas2Based",
-          forceAtlas2Based = list(
-            gravitationalConstant = -30,
-            centralGravity = 0.005,
-            springLength = 150,
-            damping = 0.4
-          )
-        ) %>%
-        visInteraction(
-          navigationButtons = TRUE,
-          keyboard = TRUE,
-          tooltipDelay = 200
-        ) %>%
-        visLayout(randomSeed = 42) %>%
-        visLegend(
-          position = "right",
-          useGroups = FALSE,
-          addNodes = list(
-            list(label = "Top Artist", shape = "dot", color = "#FF7F00", size = 20),
-            list(label = "Neighbor", shape = "dot", color = "#1F78B4", size = 10)
-          )
-        )
-      
-    }, error = function(e) {
-      showNotification(paste("Network Error:", e$message), type = "error")
-      visNetwork(
-        nodes = data.frame(id = 1, label = paste("Error:", e$message)),
-        edges = data.frame(from = numeric(), to = numeric())
-      )
-    })
+      })
+    )
   })
+  
   
   
   
