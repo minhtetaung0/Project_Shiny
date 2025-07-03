@@ -1820,6 +1820,9 @@ server <- function(input, output, session) {
   
   output$aic_box <- renderValueBox({
     req(cluster_store$stats)
+    if (input$cluster_method == "PAM") {
+      return(NULL)  # Hide AIC for PAM
+    }
     valueBox(
       value = formatC(cluster_store$stats$AIC, format = "d", big.mark = ","),
       subtitle = "AIC",
@@ -1830,6 +1833,9 @@ server <- function(input, output, session) {
   
   output$bic_box <- renderValueBox({
     req(cluster_store$stats)
+    if (input$cluster_method == "PAM") {
+      return(NULL)  # Hide BIC for PAM
+    }
     valueBox(
       value = formatC(cluster_store$stats$BIC, format = "d", big.mark = ","),
       subtitle = "BIC",
