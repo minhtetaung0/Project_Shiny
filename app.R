@@ -563,8 +563,8 @@ ui <- dashboardPage(
                     conditionalPanel(
                       condition = "input.prediction_method == 'Composite Score'",
                       numericInput("top_n_predictions", "Top N Artists to Show (Radar & Table):", 
-                                 value = 3, min = 1, max = 9)
-                      ),
+                                   value = 3, min = 1, max = 9)
+                    ),
                     conditionalPanel(
                       condition = "input.prediction_method == 'Network Centrality'",
                       sliderInput("top_n_network", "Number of Top Artists to Show:", min = 1, max = 6, value = 3)
@@ -584,10 +584,10 @@ ui <- dashboardPage(
                                  condition = "input.prediction_method != 'Growth Trajectory'",
                                  DTOutput("futureStarsTable")
                                )
-                               ),
+                      ),
                       tabPanel("Metrics", 
                                plotlyOutput("futureMetricsPlot", height = "600px"),
-                               ),
+                      ),
                       tabPanel("Visualization",
                                conditionalPanel(
                                  condition = "input.prediction_method == 'Growth Trajectory'",
@@ -601,7 +601,7 @@ ui <- dashboardPage(
                                  condition = "input.prediction_method == 'Network Centrality'",
                                  uiOutput("futureNetworkPlot", height = "600px")
                                )
-                               )
+                      )
                     )
                 )
               )
@@ -1865,9 +1865,9 @@ server <- function(input, output, session) {
   })
   
   # ================= End of Cluster Analysis Page =======================
-    
+  
   # ================= Predicition Analysis Page =======================  
-    
+  
   # === Future Prediction Subpage ===
   
   observe({
@@ -1921,9 +1921,9 @@ server <- function(input, output, session) {
     if (!is.null(input$future_genres)) {
       genre_artists <- artist_works %>%
         filter(genre %in% input$future_genres) %>%
-    distinct(person_id) %>%
-    pull(person_id)
-  active_artists <- intersect(active_artists, genre_artists)
+        distinct(person_id) %>%
+        pull(person_id)
+      active_artists <- intersect(active_artists, genre_artists)
     }
     
     artists_profile %>%
@@ -2151,7 +2151,7 @@ server <- function(input, output, session) {
       return(data.frame()) # Return empty dataframe on error
     })
   })
-    
+  
   
   # Future prediction table output
   output$futureStarsTable <- DT::renderDataTable({
@@ -2244,7 +2244,7 @@ server <- function(input, output, session) {
           theme_minimal() +
           theme(plot.title = element_text(hjust = 0.5))
       )
-      })
+    })
     
     if (nrow(prediction_data) == 0) {
       plot.new()
@@ -2705,9 +2705,9 @@ server <- function(input, output, session) {
       config(displayModeBar = TRUE)
   })
   
-    
-    
-    
+  
+  
+  
   # ================= End of Predicition Analysis Page =======================
   
 }
