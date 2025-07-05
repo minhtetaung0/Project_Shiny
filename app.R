@@ -24,170 +24,48 @@ library(NbClust)
 library(RColorBrewer)
 library(fmsb)
 
-# ===== Data Preprocessing =====
-data_path <- "data/MC1_graph.json"
-kg <- fromJSON(data_path)
+# ===== Data Laoding and Preparation =====
 
-nodes_tbl <- as_tibble(kg$nodes) %>% clean_names()
-edges_tbl <- as_tibble(kg$links) %>% clean_names()
+# ===== Load Data from RDS Files =====
+nodes_tbl <- readRDS("data/processed/nodes_tbl.rds")
+edges_tbl <- readRDS("data/processed/edges_tbl.rds")
+edges_tbl_mapped <- readRDS("data/processed/edges_tbl_mapped.rds")
+id_map <- readRDS("data/processed/id_map.rds")
+graph <- readRDS("data/processed/graph.rds")
+people_tbl <- readRDS("data/processed/people_tbl.rds")
+works_tbl <- readRDS("data/processed/works_tbl.rds")
+created_links <- readRDS("data/processed/created_links.rds")
+artist_works <- readRDS("data/processed/artist_works.rds")
+artists_profile <- readRDS("data/processed/artists_profile.rds")
+collaborations <- readRDS("data/processed/collaborations.rds")
+genre_diversity_tbl <- readRDS("data/processed/genre_diversity_tbl.rds")
+cluster_data <- readRDS("data/processed/cluster_data.rds")
+of_songs <- readRDS("data/processed/of_songs.rds")
+influence_edges <- readRDS("data/processed/influence_edges.rds")
+sailor_edges <- readRDS("data/processed/sailor_edges.rds")
+vis_nodes <- readRDS("data/processed/vis_nodes.rds")
+vis_edges <- readRDS("data/processed/vis_edges.rds")
 
-nodes_tbl <- nodes_tbl %>%
-  mutate(release_date = as.integer(release_date)) %>%
-  mutate(id = as.integer(id)) %>%
-  distinct()
 
-# --- ID Mapping ---
-id_map <- tibble(id = nodes_tbl$id, index = seq_len(nrow(nodes_tbl)))
-
-edges_tbl_mapped <- edges_tbl %>%
-  left_join(id_map, by = c("source" = "id")) %>% rename(from = index) %>%
-  left_join(id_map, by = c("target" = "id")) %>% rename(to = index) %>%
-  filter(!is.na(from), !is.na(to)) %>%
-  mutate(from = as.integer(from), to = as.integer(to))
-
-# --- Build Graph Object ---
-graph <- tbl_graph(nodes = nodes_tbl, edges = edges_tbl_mapped, directed = TRUE)
-
-# --- Define Node Supertypes ---
-nodes_tbl <- nodes_tbl %>%
-  mutate(
-    supertype = case_when(
-      node_type %in% c("Song", "Album") ~ "Work",
-      node_type %in% c("Person") ~ "Individual",
-      node_type %in% c("MusicalGroup") ~ "Group",
-      node_type %in% c("RecordLabel") ~ "Organization",
-      TRUE ~ "Other"
-    )
-  )
-
-# Add edge_type into mapped table first BEFORE any joins
-edges_tbl_mapped <- edges_tbl %>%
-  left_join(id_map, by = c("source" = "id")) %>% rename(from = index) %>%
-  left_join(id_map, by = c("target" = "id")) %>% rename(to = index) %>%
-  filter(!is.na(from), !is.na(to)) %>%
-  mutate(from = as.integer(from), to = as.integer(to))
-
-# Now define superedge using edge_type which is already in the table
-edges_tbl_mapped <- edges_tbl_mapped %>%
-  mutate(
-    superedge = case_when(
-      edge_type %in% c("ComposerOf", "LyricistOf", "ProducerOf", "RecordedBy", "PerformerOf") ~ "Contributes",
-      edge_type %in% c("CoverOf", "DirectlySamples", "InterpolatesFrom", "LyricalReferenceTo") ~ "Collaborations",
-      edge_type %in% c("DistributedBy") ~ "Business",
-      edge_type %in% c("MemberOf") ~ "Membership",
-      edge_type %in% c("InStyleOf") ~ "StyleInfluence",
-      TRUE ~ "Other"
-    )
-  )
-
-# --- Extract People and Works using supertype ---
-people_tbl <- nodes_tbl %>%
-  filter(supertype == "Individual") %>%
-  select(person_id = id, name)
-
-works_tbl <- nodes_tbl %>%
-  filter(supertype == "Work") %>%
-  select(work_id = id, release_date, genre, notable)
-
-# --- Contribution Mapping based on superedge ---
-created_links <- edges_tbl_mapped %>%
-  filter(superedge == "Contributes") %>%
-  left_join(id_map, by = c("from" = "index")) %>% rename(person_id = id) %>%
-  left_join(id_map, by = c("to" = "index")) %>% rename(work_id = id)
-
-# --- Artist-Work Mapping with Metadata ---
-artist_works <- created_links %>%
-  left_join(works_tbl, by = "work_id") %>%
-  filter(!is.na(release_date))
-
+# Get max release date
 max_release <- max(artist_works$release_date, na.rm = TRUE)
 
-# --- Artists Profile Summary ---
-artists_profile <- artist_works %>%
-  group_by(person_id) %>%
-  summarise(
-    total_works = n(),
-    notable_works = sum(notable, na.rm = TRUE),
-    oceanus_folk_works = sum(genre == "Oceanus Folk", na.rm = TRUE),
-    first_release = min(release_date, na.rm = TRUE),
-    first_notable = suppressWarnings(min(release_date[notable == TRUE], na.rm = TRUE)),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    first_notable = ifelse(is.infinite(first_notable), NA_integer_, first_notable),
-    time_to_notability = ifelse(!is.na(first_notable), 
-                                first_notable - first_release, 
-                                max_release + 5 - first_release)
-  )
-
-# --- Collaboration Count using superedge ---
-collaborations <- edges_tbl_mapped %>%
-  filter(superedge == "Collaborations") %>%
-  left_join(id_map, by = c("from" = "index")) %>%
-  count(id, name = "collaborations") %>%
-  rename(person_id = id)
-
-# --- Compute Genre Diversity ---
-genre_diversity_tbl <- artist_works %>%
-  filter(!is.na(genre)) %>%
-  group_by(person_id) %>%
-  summarise(genre_diversity = n_distinct(genre), .groups = "drop")
-
-
-# --- Final Profile Merge ---
-artists_profile <- artists_profile %>%
-  left_join(collaborations, by = "person_id") %>%
-  left_join(genre_diversity_tbl, by = "person_id") %>%
-  mutate(
-    collaborations = replace_na(collaborations, 0),
-    genre_diversity = replace_na(genre_diversity, 0)
-  ) %>%
-  inner_join(people_tbl, by = "person_id") %>%
-  relocate(person_id, name)
-
-# Precompute the necessary variables for clustering outside of the cluster analysis function.
-
-cluster_data <- artists_profile %>%
-  select(total_works, notable_works, oceanus_folk_works, collaborations, time_to_notability, genre_diversity) %>%
-  na.omit() %>%
-  scale()  # Standardize the variables
-
-
-
-### ---- Get Sailor Shift ID ----
+# Get Sailor Shift ID
 sailor_id <- nodes_tbl %>% 
   filter(str_detect(name, fixed("Sailor Shift", ignore_case = TRUE))) %>%
   pull(id)
 
-# ---- Influence Edge Types ----
+# Define influence types
 influence_types <- c("LyricalReferenceTo", "CoverOf", "InterpolatesFrom", "DirectlySamples", "InStyleOf", 
                      "PerformerOf", "ComposerOf", "LyricistOf", "ProducerOf", "RecordedBy")
 
-# ==== Precompute Oceanus Folk Songs and Influence Edges ====
-of_songs <- nodes_tbl %>%
-  filter(node_type == "Song", genre == "Oceanus Folk")
-
-influence_edges <- edges_tbl %>%
-  filter(edge_type %in% influence_types)
-
-# ---- Extract 1-hop Influence Edges ----
-sailor_edges <- edges_tbl %>%
-  filter(edge_type %in% influence_types, source == sailor_id | target == sailor_id)
-
-# ---- Get unique node IDs involved ----
-influence_ids <- unique(c(sailor_edges$source, sailor_edges$target))
-
-vis_nodes <- nodes_tbl %>%
-  filter(id %in% influence_ids) %>%
-  mutate(
-    label = name,
-    group = ifelse(id == sailor_id, "Sailor Shift", node_type),
-    color = ifelse(id == sailor_id, "darkblue", "skyblue")
-  ) %>%
-  select(id, label, group, color)
-
-vis_edges <- sailor_edges %>%
-  select(from = source, to = target, label = edge_type) 
+# Load precomputed cluster data
+cluster_analysis_data <- readRDS("data/processed/cluster_analysis_data.rds")
+cluster_dist_matrix <- readRDS("data/processed/cluster_dist_matrix.rds")
+kmeans_results <- readRDS("data/processed/kmeans_results.rds")
+pam_results <- readRDS("data/processed/pam_results.rds")
+hclust_results <- readRDS("data/processed/hclust_results.rds")
+silhouette_data <- readRDS("data/processed/silhouette_data.rds")
 
 
 # ===== UI =====
@@ -527,8 +405,11 @@ ui <- dashboardPage(
                 )
               ),
               fluidRow(
-                valueBoxOutput("aic_box", width = 3),
-                valueBoxOutput("bic_box", width = 3),
+                conditionalPanel(
+                  condition = "input.cluster_method == 'K-means'",
+                  valueBoxOutput("aic_box", width = 3),
+                  valueBoxOutput("bic_box", width = 3),
+                ),
                 valueBoxOutput("lr_box", width = 3),
                 valueBoxOutput("entropy_box", width = 3)
               )
@@ -1528,6 +1409,7 @@ server <- function(input, output, session) {
   # ===== Optimized Cluster Analysis Section =====
   
   # Reactive values to store all cluster results
+  # Reactive values to store cluster results
   cluster_store <- reactiveValues(
     results = NULL,
     df = NULL,
@@ -1543,99 +1425,82 @@ server <- function(input, output, session) {
     message = ""
   )
   
-  # Observe the run button and perform all calculations
+  # Observe the run button and use precomputed results
   observeEvent(input$run_cluster, {
     req(input$cluster_vars)
-    
-    # Set progress indicators
-    cluster_progress$running <- TRUE
-    cluster_progress$message <- "Running cluster analysis..."
     
     tryCatch({
       # Subset data based on selected variables
       selected_vars <- input$cluster_vars
-      current_data <- cluster_data[, selected_vars, drop = FALSE]
+      current_data <- cluster_analysis_data[, selected_vars, drop = FALSE]
       
-      # Validate data
-      if (nrow(current_data) == 0) {
-        stop("No data available for selected variables")
+      # Get precomputed results based on method and parameters
+      if (input$cluster_method == "K-means") {
+        cluster_store$results <- kmeans_results[[paste0("kmeans_", input$n_clusters)]]
+      } else if (input$cluster_method == "DBSCAN") {
+        # DBSCAN still needs to be computed live since it's parameter-dependent
+        cluster_store$results <- dbscan(current_data, eps = input$eps, minPts = input$minPts)
+      } else if (input$cluster_method == "PAM") {
+        cluster_store$results <- pam_results[[paste0("pam_", input$n_clusters)]]
       }
       
-      # Perform clustering with progress
-      withProgress(message = 'Performing clustering...', value = 0.3, {
-        if (input$cluster_method == "K-means") {
-          set.seed(123)
-          cluster_store$results <- kmeans(current_data, centers = input$n_clusters, nstart = 25)
-        } else if (input$cluster_method == "DBSCAN") {
-          cluster_store$results <- dbscan(current_data, eps = input$eps, minPts = input$minPts)
-        } else if (input$cluster_method == "PAM") {
-          cluster_store$results <- pam(current_data, k = input$n_clusters)
-        }
-      })
-      
       # Create cluster data frame
-      withProgress(message = 'Preparing results...', value = 0.6, {
-        cluster_store$df <- current_data %>%
-          as.data.frame() %>%
-          mutate(Cluster = as.factor(cluster_store$results$cluster),
-                 person_id = as.integer(rownames(.))) %>%
-          left_join(artists_profile %>% select(person_id, name), by = "person_id")
+      cluster_store$df <- current_data %>%
+        as.data.frame() %>%
+        mutate(Cluster = as.factor(cluster_store$results$cluster),
+               person_id = as.integer(rownames(.))) %>%
+        left_join(artists_profile %>% select(person_id, name), by = "person_id")
+      
+      # Perform PCA if we have more than 1 cluster
+      if (length(unique(cluster_store$results$cluster)) > 1) {
+        cluster_store$pca_result <- prcomp(cluster_store$df[, selected_vars], scale. = FALSE)
         
-        # Perform PCA if we have more than 1 cluster
-        if (length(unique(cluster_store$results$cluster)) > 1) {
-          cluster_store$pca_result <- prcomp(cluster_store$df[, selected_vars], scale. = FALSE)
-          
-          # Create PCA data frame
-          cluster_store$pca_df <- as.data.frame(cluster_store$pca_result$x[, 1:2])
-          cluster_store$pca_df$Cluster <- cluster_store$df$Cluster
-          cluster_store$pca_df$name <- cluster_store$df$name
+        # Create PCA data frame
+        cluster_store$pca_df <- as.data.frame(cluster_store$pca_result$x[, 1:2])
+        cluster_store$pca_df$Cluster <- cluster_store$df$Cluster
+        cluster_store$pca_df$name <- cluster_store$df$name
+      } else {
+        cluster_store$pca_result <- NULL
+        cluster_store$pca_df <- NULL
+      }
+      
+      # Calculate model statistics (only for K-means and PAM)
+      if (input$cluster_method %in% c("K-means", "PAM")) {
+        k <- if (input$cluster_method == "K-means") input$n_clusters else cluster_store$results$nc
+        data_used <- current_data
+        n <- nrow(data_used)
+        p <- ncol(data_used)
+        
+        wss <- if (input$cluster_method == "K-means") {
+          sum(cluster_store$results$withinss)
         } else {
-          cluster_store$pca_result <- NULL
-          cluster_store$pca_df <- NULL
+          sum(cluster_store$results$clusinfo[, "av_diss"])
         }
         
-        # Calculate model statistics (only for K-means and PAM)
-        if (input$cluster_method %in% c("K-means", "PAM")) {
-          k <- if (input$cluster_method == "K-means") input$n_clusters else cluster_store$results$nc
-          data_used <- current_data
-          n <- nrow(data_used)
-          p <- ncol(data_used)
-          
-          wss <- if (input$cluster_method == "K-means") {
-            sum(cluster_store$results$withinss)
-          } else {
-            sum(cluster_store$results$clusinfo[, "av_diss"])
-          }
-          
-          log_likelihood <- -n * p / 2 * log(wss / n)
-          aic <- -2 * log_likelihood + 2 * k * p
-          bic <- -2 * log_likelihood + log(n) * k * p
-          total_ss <- sum(scale(data_used, scale = FALSE)^2)
-          likelihood_ratio <- total_ss - wss
-          
-          cluster_sizes <- table(cluster_store$results$cluster)
-          proportions <- cluster_sizes / sum(cluster_sizes)
-          entropy <- -sum(proportions * log(proportions)) / log(length(proportions))
-          
-          cluster_store$stats <- list(
-            AIC = round(aic),
-            BIC = round(bic),
-            LikelihoodRatio = round(likelihood_ratio),
-            Entropy = round(entropy, 3)
-          )
-        } else {
-          cluster_store$stats <- NULL
-        }
-      })
+        log_likelihood <- -n * p / 2 * log(wss / n)
+        aic <- -2 * log_likelihood + 2 * k * p
+        bic <- -2 * log_likelihood + log(n) * k * p
+        total_ss <- sum(scale(data_used, scale = FALSE)^2)
+        likelihood_ratio <- total_ss - wss
+        
+        cluster_sizes <- table(cluster_store$results$cluster)
+        proportions <- cluster_sizes / sum(cluster_sizes)
+        entropy <- -sum(proportions * log(proportions)) / log(length(proportions))
+        
+        cluster_store$stats <- list(
+          AIC = round(aic),
+          BIC = round(bic),
+          LikelihoodRatio = round(likelihood_ratio),
+          Entropy = round(entropy, 3)
+        )
+      } else {
+        cluster_store$stats <- NULL
+      }
       
       cluster_store$last_run <- Sys.time()
-      cluster_progress$message <- "Cluster analysis completed successfully"
+      
     }, error = function(e) {
-      cluster_progress$message <- paste("Error:", e$message)
-      showNotification(cluster_progress$message, type = "error")
-    }, finally = {
-      cluster_progress$running <- FALSE
-      removeModal()
+      showNotification(paste("Error:", e$message), type = "error")
     })
   })
   
@@ -1656,23 +1521,21 @@ server <- function(input, output, session) {
   
   # ===== Optimized Output Renderers =====
   
-  # Silhouette plot - only shown for K-means and PAM
+  # Silhouette plot - use precomputed results
   output$silhouettePlot <- renderPlot({
     req(cluster_store$results)
     
     if (input$cluster_method %in% c("K-means", "PAM")) {
-      selected_vars <- input$cluster_vars
-      current_data <- cluster_data[, selected_vars, drop = FALSE]
-      
       n_clusters <- length(unique(cluster_store$results$cluster))
-      if (n_clusters < 2 || n_clusters > 10) {
+      if (n_clusters < 2 || n_clusters > 8) {
         plot.new()
-        text(0.5, 0.5, "Silhouette plot requires 2-10 clusters", col = "red")
+        text(0.5, 0.5, "Silhouette plot requires 2-8 clusters", col = "red")
         return()
       }
       
-      silhouette_avg <- silhouette(as.numeric(cluster_store$results$cluster), dist(current_data))
-      fviz_silhouette(silhouette_avg) +
+      # Use precomputed silhouette data
+      sil_data <- silhouette_data[[paste0("silhouette_", n_clusters)]]
+      fviz_silhouette(sil_data) +
         theme_minimal()
     } else {
       plot.new()
@@ -1680,18 +1543,27 @@ server <- function(input, output, session) {
     }
   })
   
-  # Elbow plot - shown immediately (doesn't require button press)
+  # Elbow plot - use precomputed results
   output$elbowPlot <- renderPlot({
     req(input$cluster_vars)
     
-    current_data <- cluster_data[, input$cluster_vars, drop = FALSE]
-    
     if (input$cluster_method != "DBSCAN") {
-      fviz_nbclust(current_data, kmeans, method = "wss", k.max = min(8, nrow(current_data)-1)) +
-        labs(title = "Elbow Method for Optimal Number of Clusters") +
+      # Use precomputed within-cluster sum of squares from kmeans_results
+      wss_values <- sapply(kmeans_results, function(x) sum(x$withinss))
+      
+      data.frame(
+        clusters = 2:8,
+        wss = wss_values
+      ) %>%
+        ggplot(aes(x = clusters, y = wss)) +
+        geom_line(color = "steelblue", size = 1.2) +
+        geom_point(color = "steelblue", size = 3) +
+        labs(title = "Elbow Method for Optimal Number of Clusters",
+             x = "Number of Clusters",
+             y = "Within-Cluster Sum of Squares") +
         theme_minimal()
     } else {
-      kNNdistplot(current_data, k = input$minPts)
+      kNNdistplot(cluster_analysis_data, k = input$minPts)
       abline(h = input$eps, col = "red", lty = 2)
       title("kNN Distance Plot (Help determine eps)")
     }

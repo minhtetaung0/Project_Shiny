@@ -1,0 +1,255 @@
+---
+title: "Data_preprocessing"
+format: html
+---
+
+# Loading Pacakges
+
+```{r}
+pacman::p_load(
+  tidyverse, jsonlite, janitor, lubridate, tidygraph, igraph, ggraph,
+  DT, plotly, visNetwork, factoextra, FactoMineR, fmsb, forcats,
+  shinydashboard, shinythemes, treemapify, cluster, dbscan, NbClust,
+  RColorBrewer
+)
+```
+
+
+# Data Preprocessing
+
+```{r}
+# ===== Data Preprocessing =====
+data_path <- "data/MC1_graph.json"
+kg <- fromJSON(data_path)
+
+nodes_tbl <- as_tibble(kg$nodes) %>% clean_names()
+edges_tbl <- as_tibble(kg$links) %>% clean_names()
+
+nodes_tbl <- nodes_tbl %>%
+  mutate(release_date = as.integer(release_date)) %>%
+  mutate(id = as.integer(id)) %>%
+  distinct()
+
+# --- ID Mapping ---
+id_map <- tibble(id = nodes_tbl$id, index = seq_len(nrow(nodes_tbl)))
+
+edges_tbl_mapped <- edges_tbl %>%
+  left_join(id_map, by = c("source" = "id")) %>% rename(from = index) %>%
+  left_join(id_map, by = c("target" = "id")) %>% rename(to = index) %>%
+  filter(!is.na(from), !is.na(to)) %>%
+  mutate(from = as.integer(from), to = as.integer(to))
+
+# --- Build Graph Object ---
+graph <- tbl_graph(nodes = nodes_tbl, edges = edges_tbl_mapped, directed = TRUE)
+
+# --- Define Node Supertypes ---
+nodes_tbl <- nodes_tbl %>%
+  mutate(
+    supertype = case_when(
+      node_type %in% c("Song", "Album") ~ "Work",
+      node_type %in% c("Person") ~ "Individual",
+      node_type %in% c("MusicalGroup") ~ "Group",
+      node_type %in% c("RecordLabel") ~ "Organization",
+      TRUE ~ "Other"
+    )
+  )
+
+# Add edge_type into mapped table first BEFORE any joins
+edges_tbl_mapped <- edges_tbl %>%
+  left_join(id_map, by = c("source" = "id")) %>% rename(from = index) %>%
+  left_join(id_map, by = c("target" = "id")) %>% rename(to = index) %>%
+  filter(!is.na(from), !is.na(to)) %>%
+  mutate(from = as.integer(from), to = as.integer(to))
+
+# Now define superedge using edge_type which is already in the table
+edges_tbl_mapped <- edges_tbl_mapped %>%
+  mutate(
+    superedge = case_when(
+      edge_type %in% c("ComposerOf", "LyricistOf", "ProducerOf", "RecordedBy", "PerformerOf") ~ "Contributes",
+      edge_type %in% c("CoverOf", "DirectlySamples", "InterpolatesFrom", "LyricalReferenceTo") ~ "Collaborations",
+      edge_type %in% c("DistributedBy") ~ "Business",
+      edge_type %in% c("MemberOf") ~ "Membership",
+      edge_type %in% c("InStyleOf") ~ "StyleInfluence",
+      TRUE ~ "Other"
+    )
+  )
+
+# --- Extract People and Works using supertype ---
+people_tbl <- nodes_tbl %>%
+  filter(supertype == "Individual") %>%
+  select(person_id = id, name)
+
+works_tbl <- nodes_tbl %>%
+  filter(supertype == "Work") %>%
+  select(work_id = id, release_date, genre, notable)
+
+# --- Contribution Mapping based on superedge ---
+created_links <- edges_tbl_mapped %>%
+  filter(superedge == "Contributes") %>%
+  left_join(id_map, by = c("from" = "index")) %>% rename(person_id = id) %>%
+  left_join(id_map, by = c("to" = "index")) %>% rename(work_id = id)
+
+# --- Artist-Work Mapping with Metadata ---
+artist_works <- created_links %>%
+  left_join(works_tbl, by = "work_id") %>%
+  filter(!is.na(release_date))
+
+max_release <- max(artist_works$release_date, na.rm = TRUE)
+
+# --- Artists Profile Summary ---
+artists_profile <- artist_works %>%
+  group_by(person_id) %>%
+  summarise(
+    total_works = n(),
+    notable_works = sum(notable, na.rm = TRUE),
+    oceanus_folk_works = sum(genre == "Oceanus Folk", na.rm = TRUE),
+    first_release = min(release_date, na.rm = TRUE),
+    first_notable = suppressWarnings(min(release_date[notable == TRUE], na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    first_notable = ifelse(is.infinite(first_notable), NA_integer_, first_notable),
+    time_to_notability = ifelse(!is.na(first_notable), 
+                                first_notable - first_release, 
+                                max_release + 5 - first_release)
+  )
+
+# --- Collaboration Count using superedge ---
+collaborations <- edges_tbl_mapped %>%
+  filter(superedge == "Collaborations") %>%
+  left_join(id_map, by = c("from" = "index")) %>%
+  count(id, name = "collaborations") %>%
+  rename(person_id = id)
+
+# --- Compute Genre Diversity ---
+genre_diversity_tbl <- artist_works %>%
+  filter(!is.na(genre)) %>%
+  group_by(person_id) %>%
+  summarise(genre_diversity = n_distinct(genre), .groups = "drop")
+
+
+# --- Final Profile Merge ---
+artists_profile <- artists_profile %>%
+  left_join(collaborations, by = "person_id") %>%
+  left_join(genre_diversity_tbl, by = "person_id") %>%
+  mutate(
+    collaborations = replace_na(collaborations, 0),
+    genre_diversity = replace_na(genre_diversity, 0)
+  ) %>%
+  inner_join(people_tbl, by = "person_id") %>%
+  relocate(person_id, name)
+
+# Precompute the necessary variables for clustering outside of the cluster analysis function.
+
+cluster_data <- artists_profile %>%
+  select(total_works, notable_works, oceanus_folk_works, collaborations, time_to_notability, genre_diversity) %>%
+  na.omit() %>%
+  scale()  # Standardize the variables
+
+
+
+### ---- Get Sailor Shift ID ----
+sailor_id <- nodes_tbl %>% 
+  filter(str_detect(name, fixed("Sailor Shift", ignore_case = TRUE))) %>%
+  pull(id)
+
+# ---- Influence Edge Types ----
+influence_types <- c("LyricalReferenceTo", "CoverOf", "InterpolatesFrom", "DirectlySamples", "InStyleOf", 
+                     "PerformerOf", "ComposerOf", "LyricistOf", "ProducerOf", "RecordedBy")
+
+# ==== Precompute Oceanus Folk Songs and Influence Edges ====
+of_songs <- nodes_tbl %>%
+  filter(node_type == "Song", genre == "Oceanus Folk")
+
+influence_edges <- edges_tbl %>%
+  filter(edge_type %in% influence_types)
+
+# ---- Extract 1-hop Influence Edges ----
+sailor_edges <- edges_tbl %>%
+  filter(edge_type %in% influence_types, source == sailor_id | target == sailor_id)
+
+# ---- Get unique node IDs involved ----
+influence_ids <- unique(c(sailor_edges$source, sailor_edges$target))
+
+vis_nodes <- nodes_tbl %>%
+  filter(id %in% influence_ids) %>%
+  mutate(
+    label = name,
+    group = ifelse(id == sailor_id, "Sailor Shift", node_type),
+    color = ifelse(id == sailor_id, "darkblue", "skyblue")
+  ) %>%
+  select(id, label, group, color)
+
+vis_edges <- sailor_edges %>%
+  select(from = source, to = target, label = edge_type) 
+
+
+saveRDS(nodes_tbl, file = "data/processed/nodes_tbl.rds")
+saveRDS(edges_tbl, file = "data/processed/edges_tbl.rds")
+saveRDS(edges_tbl_mapped, file = "data/processed/edges_tbl_mapped.rds")
+saveRDS(id_map, file = "data/processed/id_map.rds")
+saveRDS(graph, file = "data/processed/graph.rds")
+saveRDS(people_tbl, file = "data/processed/people_tbl.rds")
+saveRDS(works_tbl, file = "data/processed/works_tbl.rds")
+saveRDS(created_links, file = "data/processed/created_links.rds")
+saveRDS(artist_works, file = "data/processed/artist_works.rds")
+saveRDS(artists_profile, file = "data/processed/artists_profile.rds")
+saveRDS(collaborations, file = "data/processed/collaborations.rds")
+saveRDS(genre_diversity_tbl, file = "data/processed/genre_diversity_tbl.rds")
+saveRDS(cluster_data, file = "data/processed/cluster_data.rds")
+saveRDS(of_songs, file = "data/processed/of_songs.rds")
+saveRDS(influence_edges, file = "data/processed/influence_edges.rds")
+saveRDS(sailor_edges, file = "data/processed/sailor_edges.rds")
+saveRDS(vis_nodes, file = "data/processed/vis_nodes.rds")
+saveRDS(vis_edges, file = "data/processed/vis_edges.rds")
+
+```
+
+
+# Cluster Analysis Data Preparation
+
+```{r}
+# ===== Cluster Analysis Preprocessing =====
+
+# Prepare cluster analysis data
+cluster_analysis_data <- artists_profile %>%
+  select(total_works, notable_works, oceanus_folk_works, 
+         collaborations, time_to_notability, genre_diversity) %>%
+  na.omit() %>%
+  scale()
+
+# Precompute distance matrix
+cluster_dist_matrix <- dist(cluster_analysis_data)
+
+# Precompute k-means for common cluster numbers (2-8)
+kmeans_results <- lapply(2:8, function(k) {
+  set.seed(123)
+  kmeans(cluster_analysis_data, centers = k, nstart = 25)
+})
+names(kmeans_results) <- paste0("kmeans_", 2:8)
+
+# Precompute PAM for common cluster numbers (2-8)
+pam_results <- lapply(2:8, function(k) {
+  cluster::pam(cluster_analysis_data, k = k)
+})
+names(pam_results) <- paste0("pam_", 2:8)
+
+# Precompute hierarchical clustering
+hclust_results <- hclust(cluster_dist_matrix, method = "ward.D2")
+
+# Precompute silhouette widths for different k
+silhouette_data <- lapply(2:8, function(k) {
+  km <- kmeans_results[[paste0("kmeans_", k)]]
+  silhouette(km$cluster, cluster_dist_matrix)
+})
+names(silhouette_data) <- paste0("silhouette_", 2:8)
+
+# Save all cluster-related objects
+saveRDS(cluster_analysis_data, file = "data/processed/cluster_analysis_data.rds")
+saveRDS(cluster_dist_matrix, file = "data/processed/cluster_dist_matrix.rds")
+saveRDS(kmeans_results, file = "data/processed/kmeans_results.rds")
+saveRDS(pam_results, file = "data/processed/pam_results.rds")
+saveRDS(hclust_results, file = "data/processed/hclust_results.rds")
+saveRDS(silhouette_data, file = "data/processed/silhouette_data.rds")
+
+```
