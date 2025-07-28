@@ -14,14 +14,13 @@
 
 ## 📁 Project Structure
 
-Project_Shiny/
-├── app.R # Main Shiny app
-├── data/
-│ ├── MC1_graph.json # Original dataset
-│ ├── processed/ # Preprocessed .rds files
-├── www/
-│ ├── custom.css # CSS for dashboard styling
-├── README.md # Project documentation
+- `app.R`: The main Shiny application file.
+- `data/`: Folder containing input and processed data.
+  - `MC1_graph.json`: The original knowledge graph dataset.
+  - `processed/`: Folder with preprocessed `.rds` files used by the app.
+- `www/`: Static files such as custom CSS and images.
+  - `custom.css`: Styling for the dashboard.
+- `README.md`: This documentation file.
 
 
 ## ⚙️ Getting Started
@@ -50,9 +49,9 @@ To run the app locally:
 This project was created as part of the Visual Analytics Application module at SMU MITB (2025).
 Developed by Group 13:
 
-- Huang Zihan
-- Min Htet Aung
-- Ta Nguyen Thao Nguyen
+- [Huang Zihan](https://www.linkedin.com/in/zihan-huang-00775822a/)
+- [Min Htet Aung](https://www.linkedin.com/in/min-htet-aung-david-li/)
+- [Ta Nguyen Thao Nguyen](https://www.linkedin.com/in/cindy-ta-84771a254/)
 
 ## 📜 License
 All rights reserved to the team.
