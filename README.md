@@ -1,6 +1,7 @@
 # 🎶 Oceanus Folk Influence Explorer
 
 **Oceanus Folk Influence Explorer** is an interactive R Shiny dashboard developed for the VAST Challenge 2025. The app visualizes the evolution and influence of the *Oceanus Folk* music genre, especially in relation to the emerging *Sailor Shift* movement. It enables deep dives into artist profiles, genre timelines, influence networks, and cluster-based insights.
+🔗 **Live Shiny APP:** [https://vaa-project-group13.shinyapps.io/Project_Shiny/](https://vaa-project-group13.shinyapps.io/Project_Shiny/)
 
 ## 🔍 Key Features
 
